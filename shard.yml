@@ -1,0 +1,22 @@
+name: wgpu
+version: 0.1.0
+
+description: |
+  Crystal bindings for wgpu-native (WebGPU), inspired by wgpu-py.
+  Low-level FFI + an idiomatic high-level API for GPU compute and rendering.
+
+authors:
+  - Raj Deenoo
+
+crystal: ">= 1.16.0"
+
+license: MIT
+
+# The native library (wgpu-native) is not a shard: it is downloaded by
+# `scripts/download_wgpu.sh` into vendor/wgpu-native/.
+scripts:
+  postinstall: ./scripts/download_wgpu.sh
+
+targets:
+  wgpu-gen:
+    main: scripts/generate_bindings.cr

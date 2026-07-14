@@ -1,0 +1,15 @@
+# Downloaded native artifacts (wgpu-native lib + headers + meta)
+/vendor/
+
+# Bindings generated from webgpu.h
+/src/wgpu/native.cr
+/src/wgpu/link.cr
+
+# Crystal build
+/bin/
+/lib/
+*.dwarf
+.crystal/
+
+# Misc
+.DS_Store
