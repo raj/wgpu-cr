@@ -17,6 +17,7 @@ Like wgpu-py, the project exposes two levels:
 - End-to-end **compute** (tested: a WGSL shader doubling an array on the GPU).
 - **Windowed rendering** — a triangle in a GLFW window via a Metal surface (macOS).
 - Adapter/device requests and buffer mapping (C ↔ Crystal callbacks).
+- Log forwarding: `wgpuSetLogCallback`/`wgpuSetLogLevel` (wgpu.h) + `WGPU.set_log_stderr(level)`.
 
 🚧 Coming next (wgpu-py parity):
 - A complete object layer (`Device#create_buffer`, etc.) on top of the FFI.

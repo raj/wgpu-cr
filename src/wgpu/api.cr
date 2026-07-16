@@ -1,6 +1,38 @@
+# wgpu-native logging (from wgpu.h — not the standard webgpu.h the binding is
+# generated from, so declared here by hand).
+lib LibWGPU
+  enum LogLevel
+    Off   = 0
+    Error = 1
+    Warn  = 2
+    Info  = 3
+    Debug = 4
+    Trace = 5
+  end
+
+  alias LogCallback = (LogLevel, StringView, Void*) -> Void
+
+  fun set_log_callback = wgpuSetLogCallback(callback : LogCallback, userdata : Void*)
+  fun set_log_level = wgpuSetLogLevel(level : LogLevel)
+end
+
 module WGPU
   # Error raised by the helpers when a wgpu request fails.
   class Error < Exception
+  end
+
+  # Non-capturing callback (a valid C function pointer) forwarding wgpu-native's log
+  # to STDERR. Held in a constant so the GC never frees it while the C side holds it.
+  WGPU_LOG_CALLBACK = ->(level : LibWGPU::LogLevel, message : LibWGPU::StringView, _ud : Void*) do
+    STDERR.puts("[wgpu][#{level.to_s.downcase}] #{WGPU.to_s(message)}")
+    nil
+  end
+
+  # Forwards wgpu-native's internal log to STDERR at (and above) `level`. The internal
+  # log carries the real cause behind terse "Validation Error" messages.
+  def self.set_log_stderr(level : LibWGPU::LogLevel = LibWGPU::LogLevel::Warn) : Nil
+    LibWGPU.set_log_callback(WGPU_LOG_CALLBACK, Pointer(Void).null)
+    LibWGPU.set_log_level(level)
   end
 
   # Null (opaque pointer) handle of the given type.
