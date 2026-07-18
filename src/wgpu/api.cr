@@ -207,4 +207,216 @@ module WGPU
       raise Error.new("timed out waiting for a wgpu callback") if iterations > max_iterations
     end
   end
+
+  # ==================================================================
+  # Teardown helpers
+  #
+  # Each wgpu handle type is a distinct `*_release` FFI call, and the handles are
+  # all `Void*` typedefs — so a single "detect the type and release it" method is
+  # impossible (Crystal collapses the typedefs to `Void*` and can neither overload
+  # nor branch on them). Instead these group the handles that a render pass always
+  # produces together, releasing each with its correct function in dependency order.
+  # ==================================================================
+
+  # Releases the transient handles of one render pass: the submitted command
+  # buffer, then the pass encoder, then the command encoder. Pass them in that
+  # order (their types are all `Void*`, so the order is the contract).
+  def self.release_pass(command_buffer : LibWGPU::CommandBuffer,
+                        pass : LibWGPU::RenderPassEncoder,
+                        encoder : LibWGPU::CommandEncoder) : Nil
+    LibWGPU.command_buffer_release(command_buffer)
+    LibWGPU.render_pass_encoder_release(pass)
+    LibWGPU.command_encoder_release(encoder)
+  end
+
+  # Releases a surface frame's view and its backing surface texture (after
+  # `surface_present`).
+  def self.release_surface(view : LibWGPU::TextureView, texture : LibWGPU::Texture) : Nil
+    LibWGPU.texture_view_release(view)
+    LibWGPU.texture_release(texture)
+  end
+
+  # ==================================================================
+  # Compute
+  #
+  # High-level helpers over the raw compute FFI in `native.cr`. They cover the
+  # usual GPGPU chain: shader -> buffers -> pipeline (auto layout) -> bind group
+  # -> dispatch -> readback.
+  #
+  # GC note: `WGPU.string_view` does not copy, so every `String` passed here
+  # (WGSL source, entry point, labels) must stay alive for the duration of the
+  # call. They do — each is a method argument, alive until the wgpu call that
+  # consumes it returns, and wgpu copies the bytes at creation time.
+  # ==================================================================
+
+  # Compiles a WGSL source into a shader module.
+  def self.create_shader_module(device : LibWGPU::Device, wgsl : String, label : String? = nil) : LibWGPU::ShaderModule
+    # Build the inner structs whole (never `x.chain.s_type = ...`): a lib-struct
+    # getter returns a copy, so nested field assignment would be silently lost.
+    chain = LibWGPU::ChainedStruct.new(s_type: LibWGPU::SType::ShaderSourceWGSL)
+    source = LibWGPU::ShaderSourceWGSL.new(chain: chain, code: string_view(wgsl))
+
+    desc = LibWGPU::ShaderModuleDescriptor.new(
+      next_in_chain: pointerof(source).as(Pointer(LibWGPU::ChainedStruct)),
+      label: label ? string_view(label) : empty_string_view,
+    )
+
+    mod = LibWGPU.device_create_shader_module(device, pointerof(desc))
+    raise Error.new("device_create_shader_module returned NULL") if mod.null?
+    mod
+  end
+
+  # Allocates a GPU buffer of `size` bytes with the given usage flags.
+  #
+  #   WGPU.create_buffer(device, 1024_u64, LibWGPU::BufferUsage::Storage | LibWGPU::BufferUsage::CopySrc)
+  def self.create_buffer(device : LibWGPU::Device, size : UInt64, usage : LibWGPU::BufferUsage,
+                         label : String? = nil, mapped_at_creation : Bool = false) : LibWGPU::Buffer
+    # The `mapped_at_creation` field is declared `Bool` in native.cr but wgpu's
+    # WGPUBool is a uint32: assigning a Crystal Bool trips a to_unsafe mismatch,
+    # so feed it 0/1 (same trick as examples/compute.cr).
+    desc = LibWGPU::BufferDescriptor.new(
+      label: label ? string_view(label) : empty_string_view,
+      usage: usage,
+      size: size,
+      mapped_at_creation: (mapped_at_creation ? 1_u32 : 0_u32),
+    )
+    buffer = LibWGPU.device_create_buffer(device, pointerof(desc))
+    raise Error.new("device_create_buffer returned NULL") if buffer.null?
+    buffer
+  end
+
+  # Allocates a buffer and uploads `data` into it in one step. `CopyDst` is
+  # OR-ed into the usage automatically (required by the upload).
+  #
+  #   data = Slice(Float32).new(256) { |i| i.to_f32 }
+  #   buf  = WGPU.create_buffer_with_data(device, data, LibWGPU::BufferUsage::Storage)
+  def self.create_buffer_with_data(device : LibWGPU::Device, data : Slice, usage : LibWGPU::BufferUsage,
+                                   label : String? = nil) : LibWGPU::Buffer
+    size = data.bytesize.to_u64
+    buffer = create_buffer(device, size, usage | LibWGPU::BufferUsage::CopyDst, label)
+    write_buffer(device, buffer, data)
+    buffer
+  end
+
+  # Uploads `data` (any typed Slice, e.g. `Slice(Float32)` or `Bytes`) into an
+  # existing buffer at `offset` bytes. The buffer must have `CopyDst` usage.
+  def self.write_buffer(device : LibWGPU::Device, buffer : LibWGPU::Buffer, data : Slice, offset : UInt64 = 0_u64) : Nil
+    queue = LibWGPU.device_get_queue(device)
+    LibWGPU.queue_write_buffer(queue, buffer, offset, data.to_unsafe.as(Pointer(Void)), LibC::SizeT.new(data.bytesize))
+  end
+
+  # Creates a compute pipeline from a shader module and entry point.
+  #
+  # With the default `layout` (NULL) wgpu derives the bind group layouts from
+  # the shader ("auto" layout) — grab them back with `compute_bind_group_layout`.
+  def self.create_compute_pipeline(device : LibWGPU::Device, mod : LibWGPU::ShaderModule,
+                                   entry_point : String = "main",
+                                   layout : LibWGPU::PipelineLayout = WGPU.null(LibWGPU::PipelineLayout),
+                                   label : String? = nil) : LibWGPU::ComputePipeline
+    state = LibWGPU::ComputeState.new(module_: mod, entry_point: string_view(entry_point))
+    desc = LibWGPU::ComputePipelineDescriptor.new(
+      label: label ? string_view(label) : empty_string_view,
+      layout: layout,
+      compute: state,
+    )
+    pipeline = LibWGPU.device_create_compute_pipeline(device, pointerof(desc))
+    raise Error.new("device_create_compute_pipeline returned NULL") if pipeline.null?
+    pipeline
+  end
+
+  # Returns the auto-derived bind group layout of a compute pipeline for `group`.
+  def self.compute_bind_group_layout(pipeline : LibWGPU::ComputePipeline, group : UInt32 = 0_u32) : LibWGPU::BindGroupLayout
+    layout = LibWGPU.compute_pipeline_get_bind_group_layout(pipeline, group)
+    raise Error.new("compute_pipeline_get_bind_group_layout returned NULL") if layout.null?
+    layout
+  end
+
+  # Binds buffers to a layout. Each entry is `{binding, buffer, size_in_bytes}`
+  # (offset 0, whole binding). Pass the buffer's own size for `size_in_bytes`.
+  #
+  #   bg = WGPU.create_bind_group(device, layout, [
+  #     {0_u32, input_buf,  in_size},
+  #     {1_u32, output_buf, out_size},
+  #   ])
+  def self.create_bind_group(device : LibWGPU::Device, layout : LibWGPU::BindGroupLayout,
+                             buffers : Array(Tuple(UInt32, LibWGPU::Buffer, UInt64)),
+                             label : String? = nil) : LibWGPU::BindGroup
+    entries = buffers.map do |(binding, buffer, size)|
+      LibWGPU::BindGroupEntry.new(binding: binding, buffer: buffer, offset: 0_u64, size: size)
+    end
+
+    desc = LibWGPU::BindGroupDescriptor.new(
+      label: label ? string_view(label) : empty_string_view,
+      layout: layout,
+      entry_count: LibC::SizeT.new(entries.size),
+      entries: entries.to_unsafe,
+    )
+    bind_group = LibWGPU.device_create_bind_group(device, pointerof(desc))
+    raise Error.new("device_create_bind_group returned NULL") if bind_group.null?
+    bind_group
+  end
+
+  # Records and submits a single compute pass: set pipeline + bind group (at
+  # group 0), dispatch `(x, y, z)` workgroups, submit to the queue.
+  #
+  # This does NOT wait for completion. Use `read_buffer` (which maps, and so
+  # blocks until the submitted work is done) to read results back.
+  def self.dispatch(device : LibWGPU::Device, pipeline : LibWGPU::ComputePipeline, bind_group : LibWGPU::BindGroup,
+                    workgroups_x : UInt32, workgroups_y : UInt32 = 1_u32, workgroups_z : UInt32 = 1_u32) : Nil
+    queue = LibWGPU.device_get_queue(device)
+
+    enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
+    encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
+    raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
+
+    pass_desc = LibWGPU::ComputePassDescriptor.new(label: empty_string_view)
+    pass = LibWGPU.command_encoder_begin_compute_pass(encoder, pointerof(pass_desc))
+    raise Error.new("command_encoder_begin_compute_pass returned NULL") if pass.null?
+
+    LibWGPU.compute_pass_encoder_set_pipeline(pass, pipeline)
+    LibWGPU.compute_pass_encoder_set_bind_group(pass, 0_u32, bind_group, LibC::SizeT.new(0), Pointer(UInt32).null)
+    LibWGPU.compute_pass_encoder_dispatch_workgroups(pass, workgroups_x, workgroups_y, workgroups_z)
+    LibWGPU.compute_pass_encoder_end(pass)
+    LibWGPU.compute_pass_encoder_release(pass)
+
+    cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+    cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+    LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
+
+    LibWGPU.command_buffer_release(cmd)
+    LibWGPU.command_encoder_release(encoder)
+  end
+
+  # Reads `size` bytes back from a GPU buffer into a `Bytes` on the CPU.
+  #
+  # Copies `source` into a transient MapRead staging buffer, submits, then
+  # blocks (via `map_buffer_read`) until the copy completes. `source` must have
+  # `CopySrc` usage. Reinterpret the result with e.g. `bytes.unsafe_slice_of(Float32)`.
+  def self.read_buffer(instance : LibWGPU::Instance, device : LibWGPU::Device,
+                       source : LibWGPU::Buffer, size : UInt64) : Bytes
+    staging = create_buffer(device, size,
+      LibWGPU::BufferUsage::MapRead | LibWGPU::BufferUsage::CopyDst, "wgpu-cr readback")
+
+    queue = LibWGPU.device_get_queue(device)
+    enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
+    encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
+    LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
+    cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+    cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+    LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
+    LibWGPU.command_buffer_release(cmd)
+    LibWGPU.command_encoder_release(encoder)
+
+    map_buffer_read(instance, staging, size)
+
+    ptr = LibWGPU.buffer_get_const_mapped_range(staging, LibC::SizeT.new(0), LibC::SizeT.new(size))
+    raise Error.new("buffer_get_const_mapped_range returned NULL") if ptr.null?
+
+    bytes = Bytes.new(size)
+    bytes.copy_from(ptr.as(UInt8*), size)
+
+    LibWGPU.buffer_unmap(staging)
+    LibWGPU.buffer_release(staging)
+    bytes
+  end
 end
