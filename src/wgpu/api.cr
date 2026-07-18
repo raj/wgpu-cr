@@ -303,6 +303,7 @@ module WGPU
   def self.write_buffer(device : LibWGPU::Device, buffer : LibWGPU::Buffer, data : Slice, offset : UInt64 = 0_u64) : Nil
     queue = LibWGPU.device_get_queue(device)
     LibWGPU.queue_write_buffer(queue, buffer, offset, data.to_unsafe.as(Pointer(Void)), LibC::SizeT.new(data.bytesize))
+    LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
   end
 
   # Creates a compute pipeline from a shader module and entry point.
@@ -385,6 +386,7 @@ module WGPU
 
     LibWGPU.command_buffer_release(cmd)
     LibWGPU.command_encoder_release(encoder)
+    LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
   end
 
   # Reads `size` bytes back from a GPU buffer into a `Bytes` on the CPU.
@@ -406,6 +408,7 @@ module WGPU
     LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
     LibWGPU.command_buffer_release(cmd)
     LibWGPU.command_encoder_release(encoder)
+    LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
 
     map_buffer_read(instance, staging, size)
 
