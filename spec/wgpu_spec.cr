@@ -146,3 +146,44 @@ describe WGPU do
     LibWGPU.instance_release(instance)
   end
 end
+
+# ABI guards: assert the memory layout of structs we pass to wgpu-native by value matches the
+# C `webgpu.h` this binding targets. These sizes are derived from the vendored header
+# (vendor/wgpu-native/include/webgpu/webgpu.h) on a 64-bit target (pointer = size_t = 8 bytes,
+# WGPUFlags = uint64_t, C enums = 4 bytes). If a wgpu-native bump changes a struct, one of these
+# fails instead of silently corrupting arguments at runtime.
+describe "LibWGPU struct ABI" do
+  it "keeps WGPUFlags-based enums 64-bit (the linchpin for many struct offsets)" do
+    # typedef uint64_t WGPUFlags; WGPUShaderStage / WGPUBufferUsage are WGPUFlags.
+    sizeof(LibWGPU::ShaderStage).should eq(8)
+    alignof(LibWGPU::ShaderStage).should eq(8)
+    sizeof(LibWGPU::BufferUsage).should eq(8)
+  end
+
+  it "keeps the foundational structs stable" do
+    # WGPUChainedStruct { ptr next; WGPUSType sType(enum=4) } -> 8 + 4 + pad = 16.
+    sizeof(LibWGPU::ChainedStruct).should eq(16)
+    alignof(LibWGPU::ChainedStruct).should eq(8)
+    # WGPUStringView { char const* data; size_t length } -> 8 + 8 = 16.
+    sizeof(LibWGPU::StringView).should eq(16)
+    # WGPUColor { double r,g,b,a } -> 4 * 8 = 32.
+    sizeof(LibWGPU::Color).should eq(32)
+    # WGPUExtent3D { uint32 width,height,depthOrArrayLayers } -> 3 * 4 = 12, align 4.
+    sizeof(LibWGPU::Extent3D).should eq(12)
+    alignof(LibWGPU::Extent3D).should eq(4)
+  end
+
+  it "keeps recently-changed structs matching the header (previously unverified)" do
+    # WGPUInstanceDescriptor { ptr; size_t requiredFeatureCount; ptr requiredFeatures;
+    #   ptr requiredLimits } -> inline (no InstanceCapabilities sub-struct) -> 4 * 8 = 32.
+    sizeof(LibWGPU::InstanceDescriptor).should eq(32)
+    # WGPUBindGroupLayoutEntry { ptr; uint32 binding; WGPUShaderStage visibility(8);
+    #   uint32 bindingArraySize; buffer; sampler; texture; storageTexture } -> 120.
+    sizeof(LibWGPU::BindGroupLayoutEntry).should eq(120)
+    # WGPULimits: 30 fields ending in uint32 maxImmediateSize, three uint64s -> 152.
+    sizeof(LibWGPU::Limits).should eq(152)
+    # WGPUBindGroupEntry { ptr; uint32 binding; ptr buffer; uint64 offset; uint64 size;
+    #   ptr sampler; ptr textureView } -> 56.
+    sizeof(LibWGPU::BindGroupEntry).should eq(56)
+  end
+end
