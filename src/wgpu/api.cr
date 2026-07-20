@@ -67,6 +67,39 @@ module WGPU
   end
 
   # ------------------------------------------------------------------
+  # Feature queries
+  #
+  # The raw `*_has_feature` funs in native.cr are typed to return `LibWGPU::Bool`,
+  # which is an alias for `UInt32` (that is what WGPUBool is on the C side). In
+  # Crystal EVERY integer is truthy — even `0_u32` — so writing
+  #   if LibWGPU.device_has_feature(device, feature)
+  # is ALWAYS taken, silently, regardless of the real answer. These thin helpers
+  # convert the C boolean to a genuine Crystal `Bool` via `!= 0` so they behave
+  # correctly in conditionals. The raw lib signatures are deliberately left
+  # unchanged (they must keep matching the C ABI).
+  # ------------------------------------------------------------------
+
+  # True if the wgpu-native instance layer supports `feature`.
+  def self.has_instance_feature?(feature : LibWGPU::InstanceFeatureName) : Bool
+    LibWGPU.has_instance_feature(feature) != 0
+  end
+
+  # True if `adapter` supports `feature`.
+  def self.adapter_has_feature?(adapter : LibWGPU::Adapter, feature : LibWGPU::FeatureName) : Bool
+    LibWGPU.adapter_has_feature(adapter, feature) != 0
+  end
+
+  # True if `device` supports `feature`.
+  def self.device_has_feature?(device : LibWGPU::Device, feature : LibWGPU::FeatureName) : Bool
+    LibWGPU.device_has_feature(device, feature) != 0
+  end
+
+  # True if `instance` supports the given WGSL language `feature`.
+  def self.instance_has_wgsl_language_feature?(instance : LibWGPU::Instance, feature : LibWGPU::WGSLLanguageFeatureName) : Bool
+    LibWGPU.instance_has_wgsl_language_feature(instance, feature) != 0
+  end
+
+  # ------------------------------------------------------------------
   # Instance
   # ------------------------------------------------------------------
 
