@@ -399,27 +399,33 @@ module WGPU
                     workgroups_x : UInt32, workgroups_y : UInt32 = 1_u32, workgroups_z : UInt32 = 1_u32) : Nil
     queue = LibWGPU.device_get_queue(device)
 
-    enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
-    encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
-    raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
+    # Track the transient encoder/pass so `ensure` can release them even if a
+    # raise fires mid-record; both start NULL and are released only once created.
+    encoder = WGPU.null(LibWGPU::CommandEncoder)
+    pass = WGPU.null(LibWGPU::ComputePassEncoder)
+    begin
+      enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
+      encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
+      raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
 
-    pass_desc = LibWGPU::ComputePassDescriptor.new(label: empty_string_view)
-    pass = LibWGPU.command_encoder_begin_compute_pass(encoder, pointerof(pass_desc))
-    raise Error.new("command_encoder_begin_compute_pass returned NULL") if pass.null?
+      pass_desc = LibWGPU::ComputePassDescriptor.new(label: empty_string_view)
+      pass = LibWGPU.command_encoder_begin_compute_pass(encoder, pointerof(pass_desc))
+      raise Error.new("command_encoder_begin_compute_pass returned NULL") if pass.null?
 
-    LibWGPU.compute_pass_encoder_set_pipeline(pass, pipeline)
-    LibWGPU.compute_pass_encoder_set_bind_group(pass, 0_u32, bind_group, LibC::SizeT.new(0), Pointer(UInt32).null)
-    LibWGPU.compute_pass_encoder_dispatch_workgroups(pass, workgroups_x, workgroups_y, workgroups_z)
-    LibWGPU.compute_pass_encoder_end(pass)
-    LibWGPU.compute_pass_encoder_release(pass)
+      LibWGPU.compute_pass_encoder_set_pipeline(pass, pipeline)
+      LibWGPU.compute_pass_encoder_set_bind_group(pass, 0_u32, bind_group, LibC::SizeT.new(0), Pointer(UInt32).null)
+      LibWGPU.compute_pass_encoder_dispatch_workgroups(pass, workgroups_x, workgroups_y, workgroups_z)
+      LibWGPU.compute_pass_encoder_end(pass)
 
-    cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
-    cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
-    LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
-
-    LibWGPU.command_buffer_release(cmd)
-    LibWGPU.command_encoder_release(encoder)
-    LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+      cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+      cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+      LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
+      LibWGPU.command_buffer_release(cmd)
+    ensure
+      LibWGPU.compute_pass_encoder_release(pass) unless pass.null?
+      LibWGPU.command_encoder_release(encoder) unless encoder.null?
+      LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+    end
   end
 
   # Reads `size` bytes back from a GPU buffer into a `Bytes` on the CPU.
@@ -432,27 +438,33 @@ module WGPU
     staging = create_buffer(device, size,
       LibWGPU::BufferUsage::MapRead | LibWGPU::BufferUsage::CopyDst, "wgpu-cr readback")
 
-    queue = LibWGPU.device_get_queue(device)
-    enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
-    encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
-    LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
-    cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
-    cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
-    LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
-    LibWGPU.command_buffer_release(cmd)
-    LibWGPU.command_encoder_release(encoder)
-    LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+    # `staging` must be released even if mapping or read-back raises. `mapped`
+    # tracks whether the buffer got mapped, so `ensure` only unmaps a mapped one.
+    mapped = false
+    begin
+      queue = LibWGPU.device_get_queue(device)
+      enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
+      encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
+      LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
+      cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+      cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+      LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
+      LibWGPU.command_buffer_release(cmd)
+      LibWGPU.command_encoder_release(encoder)
+      LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
 
-    map_buffer_read(instance, staging, size)
+      map_buffer_read(instance, staging, size)
+      mapped = true
 
-    ptr = LibWGPU.buffer_get_const_mapped_range(staging, LibC::SizeT.new(0), LibC::SizeT.new(size))
-    raise Error.new("buffer_get_const_mapped_range returned NULL") if ptr.null?
+      ptr = LibWGPU.buffer_get_const_mapped_range(staging, LibC::SizeT.new(0), LibC::SizeT.new(size))
+      raise Error.new("buffer_get_const_mapped_range returned NULL") if ptr.null?
 
-    bytes = Bytes.new(size)
-    bytes.copy_from(ptr.as(UInt8*), size)
-
-    LibWGPU.buffer_unmap(staging)
-    LibWGPU.buffer_release(staging)
-    bytes
+      bytes = Bytes.new(size)
+      bytes.copy_from(ptr.as(UInt8*), size)
+      bytes
+    ensure
+      LibWGPU.buffer_unmap(staging) if mapped
+      LibWGPU.buffer_release(staging)
+    end
   end
 end
