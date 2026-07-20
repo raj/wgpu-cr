@@ -109,4 +109,40 @@ describe WGPU do
 
     LibWGPU.instance_release(instance)
   end
+
+  # Same compute round-trip as above, but driven entirely through the WGPU.*
+  # ergonomic helper layer (create_shader_module/create_buffer_with_data/
+  # create_compute_pipeline/create_bind_group/dispatch/read_buffer). Regression
+  # test so those helpers stay wired up correctly.
+  it "runs a compute shader through the WGPU.* helpers" do
+    instance = WGPU.create_instance
+    adapter = WGPU.request_adapter(instance)
+    device = WGPU.request_device(instance, adapter)
+
+    input = Slice(Float32).new(64) { |i| i.to_f32 }
+    size = input.bytesize.to_u64
+
+    storage = WGPU.create_buffer_with_data(device, input,
+      LibWGPU::BufferUsage::Storage | LibWGPU::BufferUsage::CopySrc)
+
+    wgsl_src = <<-W
+    @group(0) @binding(0) var<storage, read_write> d: array<f32>;
+    @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+      if (g.x < arrayLength(&d)) { d[g.x] = d[g.x] * 2.0; }
+    }
+    W
+    shader = WGPU.create_shader_module(device, wgsl_src)
+    pipeline = WGPU.create_compute_pipeline(device, shader)
+    layout = WGPU.compute_bind_group_layout(pipeline)
+    bind_group = WGPU.create_bind_group(device, layout, [{0_u32, storage, size}])
+
+    WGPU.dispatch(device, pipeline, bind_group, 1_u32)
+
+    bytes = WGPU.read_buffer(instance, device, storage, size)
+    output = bytes.unsafe_slice_of(Float32).to_a
+
+    output.should eq(input.to_a.map { |v| v * 2 })
+
+    LibWGPU.instance_release(instance)
+  end
 end
