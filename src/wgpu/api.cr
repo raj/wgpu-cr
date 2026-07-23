@@ -235,7 +235,7 @@ module WGPU
     iterations = 0
     until block.call
       LibWGPU.instance_process_events(instance)
-      sleep(0.001)
+      sleep(1.millisecond)
       iterations += 1
       raise Error.new("timed out waiting for a wgpu callback") if iterations > max_iterations
     end
