@@ -72,7 +72,11 @@ puts "wgpu-cr #{WGPU::VERSION} (wgpu-native #{WGPU::NATIVE_VERSION})"
 
 # Pick the surface's preferred format.
 caps = LibWGPU::SurfaceCapabilities.new
-LibWGPU.surface_get_capabilities(surface, adapter, pointerof(caps))
+caps_status = LibWGPU.surface_get_capabilities(surface, adapter, pointerof(caps))
+if !caps_status.success? || caps.format_count == 0
+  LibWGPU.surface_capabilities_free_members(caps)
+  abort "surface_get_capabilities failed (status: #{caps_status}, format_count: #{caps.format_count})"
+end
 format = caps.formats[0]
 LibWGPU.surface_capabilities_free_members(caps)
 
@@ -145,6 +149,9 @@ while LibGLFW.window_should_close(window) == 0
   st = LibWGPU::SurfaceTexture.new
   LibWGPU.surface_get_current_texture(surface, pointerof(st))
   unless st.status.success_optimal? || st.status.success_suboptimal?
+    # Non-optimal acquisitions can still hand out a texture: release it to
+    # avoid leaking one per skipped frame.
+    LibWGPU.texture_release(st.texture) unless st.texture.null?
     next # texture not ready (resize/outdated) — skip this frame
   end
 

@@ -35,6 +35,23 @@ module WGPU
     LibWGPU.set_log_level(level)
   end
 
+  # Default device-lost callback installed by `request_device`, logging the
+  # reason to STDERR. Non-capturing (a valid C function pointer), held in a
+  # constant so the GC never frees it while the C side holds it.
+  WGPU_DEVICE_LOST_CALLBACK = ->(_device : LibWGPU::Device*, reason : LibWGPU::DeviceLostReason, message : LibWGPU::StringView, _u1 : Void*, _u2 : Void*) do
+    STDERR.puts("[wgpu] device lost (#{reason}): #{WGPU.to_s(message)}")
+    nil
+  end
+
+  # Default uncaptured-error callback installed by `request_device`, logging
+  # validation / out-of-memory / internal errors to STDERR. Without it the
+  # zeroed descriptor default delivers uncaptured errors nowhere, so they
+  # vanish silently. Same non-capturing rules as above.
+  WGPU_UNCAPTURED_ERROR_CALLBACK = ->(_device : LibWGPU::Device*, type : LibWGPU::ErrorType, message : LibWGPU::StringView, _u1 : Void*, _u2 : Void*) do
+    STDERR.puts("[wgpu] uncaptured error (#{type}): #{WGPU.to_s(message)}")
+    nil
+  end
+
   # Null (opaque pointer) handle of the given type.
   #   WGPU.null(LibWGPU::PipelineLayout)
   # The lib's `type X = Void*` typedefs don't expose `.null`, hence this helper.
@@ -172,6 +189,19 @@ module WGPU
 
     descriptor = LibWGPU::DeviceDescriptor.new
 
+    # Default error plumbing: wgpu-native only delivers uncaptured errors and
+    # device-loss through these callbacks, and the zeroed default ("no
+    # callback") drops them on the floor. Route both to STDERR. Note: the
+    # uncaptured-error info has no `mode` field in webgpu.h — it fires
+    # synchronously at the offending call, so no CallbackMode applies to it.
+    descriptor.device_lost_callback_info = LibWGPU::DeviceLostCallbackInfo.new(
+      mode: LibWGPU::CallbackMode::AllowProcessEvents,
+      callback: WGPU_DEVICE_LOST_CALLBACK,
+    )
+    descriptor.uncaptured_error_callback_info = LibWGPU::UncapturedErrorCallbackInfo.new(
+      callback: WGPU_UNCAPTURED_ERROR_CALLBACK,
+    )
+
     callback = ->(status : LibWGPU::RequestDeviceStatus, device : LibWGPU::Device, message : LibWGPU::StringView, u1 : Void*, _u2 : Void*) do
       r = u1.as(Pointer(DeviceResult))
       r.value.handle = device
@@ -231,6 +261,13 @@ module WGPU
 
   # Pumps the instance event loop until `block` returns true.
   # Guards against waiting forever if a callback never fires.
+  #
+  # NOTE: wgpu-native's `wgpuInstanceWaitAny` (a native timed wait, exposed as
+  # `LibWGPU.instance_wait_any`) would avoid the 1 kHz polling, but in the
+  # vendored v29 binary that entry point is an `unimplemented!()` stub that
+  # aborts the process (verified: both poll-mode timeout=0 and timed waits
+  # panic, with or without the TimedWaitAny instance feature). Keep polling
+  # `wgpuInstanceProcessEvents` until wgpu-native actually implements it.
   private def self.wait_until(instance : LibWGPU::Instance, max_iterations = 100_000, &block : -> Bool)
     iterations = 0
     until block.call
