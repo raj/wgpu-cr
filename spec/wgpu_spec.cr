@@ -186,4 +186,16 @@ describe "LibWGPU struct ABI" do
     #   ptr sampler; ptr textureView } -> 56.
     sizeof(LibWGPU::BindGroupEntry).should eq(56)
   end
+
+  it "keeps the DeviceDescriptor callback-info structs matching the header (passed by value to adapter_request_device)" do
+    # WGPUDeviceLostCallbackInfo { ptr; WGPUCallbackMode mode(enum=4, +4 pad);
+    #   callback; userdata1; userdata2 } -> 8 + 8 + 8 + 8 + 8 = 40.
+    sizeof(LibWGPU::DeviceLostCallbackInfo).should eq(40)
+    # WGPUUncapturedErrorCallbackInfo { ptr; callback; userdata1; userdata2 }
+    #   (no mode field) -> 4 * 8 = 32.
+    sizeof(LibWGPU::UncapturedErrorCallbackInfo).should eq(32)
+    # WGPUDeviceDescriptor { ptr; StringView(16); size_t; ptr; ptr; QueueDescriptor(24);
+    #   DeviceLostCallbackInfo(40); UncapturedErrorCallbackInfo(32) } -> 144.
+    sizeof(LibWGPU::DeviceDescriptor).should eq(144)
+  end
 end

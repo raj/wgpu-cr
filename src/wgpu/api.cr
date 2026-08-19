@@ -24,7 +24,7 @@ module WGPU
   # Non-capturing callback (a valid C function pointer) forwarding wgpu-native's log
   # to STDERR. Held in a constant so the GC never frees it while the C side holds it.
   WGPU_LOG_CALLBACK = ->(level : LibWGPU::LogLevel, message : LibWGPU::StringView, _ud : Void*) do
-    STDERR.puts("[wgpu][#{level.to_s.downcase}] #{WGPU.to_s(message)}")
+    STDERR.puts("[wgpu][#{level.to_s.downcase}] #{WGPU.view_to_s(message)}")
     nil
   end
 
@@ -39,7 +39,7 @@ module WGPU
   # reason to STDERR. Non-capturing (a valid C function pointer), held in a
   # constant so the GC never frees it while the C side holds it.
   WGPU_DEVICE_LOST_CALLBACK = ->(_device : LibWGPU::Device*, reason : LibWGPU::DeviceLostReason, message : LibWGPU::StringView, _u1 : Void*, _u2 : Void*) do
-    STDERR.puts("[wgpu] device lost (#{reason}): #{WGPU.to_s(message)}")
+    STDERR.puts("[wgpu] device lost (#{reason}): #{WGPU.view_to_s(message)}")
     nil
   end
 
@@ -48,7 +48,7 @@ module WGPU
   # zeroed descriptor default delivers uncaptured errors nowhere, so they
   # vanish silently. Same non-capturing rules as above.
   WGPU_UNCAPTURED_ERROR_CALLBACK = ->(_device : LibWGPU::Device*, type : LibWGPU::ErrorType, message : LibWGPU::StringView, _u1 : Void*, _u2 : Void*) do
-    STDERR.puts("[wgpu] uncaptured error (#{type}): #{WGPU.to_s(message)}")
+    STDERR.puts("[wgpu] uncaptured error (#{type}): #{WGPU.view_to_s(message)}")
     nil
   end
 
@@ -78,7 +78,9 @@ module WGPU
   end
 
   # Converts a `WGPUStringView` returned by the C side into a Crystal String.
-  def self.to_s(view : LibWGPU::StringView) : String
+  # Named `view_to_s` (not `to_s`) so it does not shadow the reserved module
+  # `to_s` — overriding that would give `WGPU.to_s` a foreign signature.
+  def self.view_to_s(view : LibWGPU::StringView) : String
     return "" if view.data.null? || view.length == 0
     String.new(view.data.as(UInt8*), view.length)
   end
@@ -144,7 +146,11 @@ module WGPU
   def self.request_adapter(instance : LibWGPU::Instance,
                            power_preference : LibWGPU::PowerPreference = LibWGPU::PowerPreference::HighPerformance,
                            compatible_surface : LibWGPU::Surface = WGPU.null(LibWGPU::Surface)) : LibWGPU::Adapter
-    result = AdapterResult.new
+    # Box the result on the heap: the C side keeps this pointer as `userdata1`
+    # and may fire the callback after a timeout has already unwound this frame,
+    # so it must not point at the stack (see `wait_until` / PENDING_TIMEOUT_RESULTS).
+    result = Pointer(AdapterResult).malloc(1)
+    result.value = AdapterResult.new
 
     options = LibWGPU::RequestAdapterOptions.new
     options.power_preference = power_preference
@@ -154,7 +160,7 @@ module WGPU
       r = u1.as(Pointer(AdapterResult))
       r.value.handle = adapter
       r.value.status = status
-      r.value.message = WGPU.to_s(message)
+      r.value.message = WGPU.view_to_s(message)
       r.value.done = true
       nil
     end
@@ -162,15 +168,15 @@ module WGPU
     info = LibWGPU::RequestAdapterCallbackInfo.new
     info.mode = LibWGPU::CallbackMode::AllowProcessEvents
     info.callback = callback
-    info.userdata1 = pointerof(result).as(Void*)
+    info.userdata1 = result.as(Void*)
 
     LibWGPU.instance_request_adapter(instance, pointerof(options), info)
-    wait_until(instance) { result.done }
+    wait_until(instance, result.as(Void*)) { result.value.done }
 
-    unless result.status.success?
-      raise Error.new("request_adapter failed: #{result.status} #{result.message}")
+    unless result.value.status.success?
+      raise Error.new("request_adapter failed: #{result.value.status} #{result.value.message}")
     end
-    result.handle
+    result.value.handle
   end
 
   # ------------------------------------------------------------------
@@ -185,7 +191,10 @@ module WGPU
   end
 
   def self.request_device(instance : LibWGPU::Instance, adapter : LibWGPU::Adapter) : LibWGPU::Device
-    result = DeviceResult.new
+    # Box on the heap — see `request_adapter` / `wait_until` for why the
+    # callback's `userdata1` must outlive a timed-out stack frame.
+    result = Pointer(DeviceResult).malloc(1)
+    result.value = DeviceResult.new
 
     descriptor = LibWGPU::DeviceDescriptor.new
 
@@ -206,7 +215,7 @@ module WGPU
       r = u1.as(Pointer(DeviceResult))
       r.value.handle = device
       r.value.status = status
-      r.value.message = WGPU.to_s(message)
+      r.value.message = WGPU.view_to_s(message)
       r.value.done = true
       nil
     end
@@ -214,15 +223,15 @@ module WGPU
     info = LibWGPU::RequestDeviceCallbackInfo.new
     info.mode = LibWGPU::CallbackMode::AllowProcessEvents
     info.callback = callback
-    info.userdata1 = pointerof(result).as(Void*)
+    info.userdata1 = result.as(Void*)
 
     LibWGPU.adapter_request_device(adapter, pointerof(descriptor), info)
-    wait_until(instance) { result.done }
+    wait_until(instance, result.as(Void*)) { result.value.done }
 
-    unless result.status.success?
-      raise Error.new("request_device failed: #{result.status} #{result.message}")
+    unless result.value.status.success?
+      raise Error.new("request_device failed: #{result.value.status} #{result.value.message}")
     end
-    result.handle
+    result.value.handle
   end
 
   # ------------------------------------------------------------------
@@ -236,12 +245,15 @@ module WGPU
   end
 
   def self.map_buffer_read(instance : LibWGPU::Instance, buffer : LibWGPU::Buffer, size : UInt64, offset : UInt64 = 0_u64)
-    result = MapResult.new
+    # Box on the heap — see `request_adapter` / `wait_until` for why the
+    # callback's `userdata1` must outlive a timed-out stack frame.
+    result = Pointer(MapResult).malloc(1)
+    result.value = MapResult.new
 
     callback = ->(status : LibWGPU::MapAsyncStatus, message : LibWGPU::StringView, u1 : Void*, _u2 : Void*) do
       r = u1.as(Pointer(MapResult))
       r.value.status = status
-      r.value.message = WGPU.to_s(message)
+      r.value.message = WGPU.view_to_s(message)
       r.value.done = true
       nil
     end
@@ -249,18 +261,31 @@ module WGPU
     info = LibWGPU::BufferMapCallbackInfo.new
     info.mode = LibWGPU::CallbackMode::AllowProcessEvents
     info.callback = callback
-    info.userdata1 = pointerof(result).as(Void*)
+    info.userdata1 = result.as(Void*)
 
     LibWGPU.buffer_map_async(buffer, LibWGPU::MapMode::Read, offset, size, info)
-    wait_until(instance) { result.done }
+    wait_until(instance, result.as(Void*)) { result.value.done }
 
-    unless result.status.success?
-      raise Error.new("buffer_map_async failed: #{result.status} #{result.message}")
+    unless result.value.status.success?
+      raise Error.new("buffer_map_async failed: #{result.value.status} #{result.value.message}")
     end
   end
 
+  # Retains boxed callback results whose wait timed out while the C future was
+  # still pending. The C side still holds a raw `userdata1` pointer into that
+  # heap box, so a late callback would write through it after `wait_until`
+  # raised; keeping the box referenced here means it lands in live memory
+  # rather than an allocation the GC has reclaimed and reused. Only ever grows
+  # on the fatal timeout path (which raises), so it does not leak in practice.
+  PENDING_TIMEOUT_RESULTS = [] of Void*
+
   # Pumps the instance event loop until `block` returns true.
   # Guards against waiting forever if a callback never fires.
+  #
+  # `keep_alive`, when non-null, points at the heap box the pending C callback
+  # writes into (its `userdata1`). On timeout the box is retained (see
+  # `PENDING_TIMEOUT_RESULTS`) before raising, so a late write cannot corrupt
+  # reclaimed memory.
   #
   # NOTE: wgpu-native's `wgpuInstanceWaitAny` (a native timed wait, exposed as
   # `LibWGPU.instance_wait_any`) would avoid the 1 kHz polling, but in the
@@ -268,13 +293,16 @@ module WGPU
   # aborts the process (verified: both poll-mode timeout=0 and timed waits
   # panic, with or without the TimedWaitAny instance feature). Keep polling
   # `wgpuInstanceProcessEvents` until wgpu-native actually implements it.
-  private def self.wait_until(instance : LibWGPU::Instance, max_iterations = 100_000, &block : -> Bool)
+  private def self.wait_until(instance : LibWGPU::Instance, keep_alive : Void* = Pointer(Void).null, max_iterations = 100_000, &block : -> Bool)
     iterations = 0
     until block.call
       LibWGPU.instance_process_events(instance)
       sleep(1.millisecond)
       iterations += 1
-      raise Error.new("timed out waiting for a wgpu callback") if iterations > max_iterations
+      if iterations > max_iterations
+        PENDING_TIMEOUT_RESULTS << keep_alive unless keep_alive.null?
+        raise Error.new("timed out waiting for a wgpu callback")
+      end
     end
   end
 
