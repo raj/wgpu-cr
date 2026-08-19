@@ -139,4 +139,4 @@ The "clean" system-side fix is `brew reinstall lld` to align the versions.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
