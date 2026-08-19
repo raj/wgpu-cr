@@ -1,8 +1,10 @@
 # Downloaded native artifacts (wgpu-native lib + headers + meta)
 /vendor/
 
-# Bindings generated from webgpu.h
-/src/wgpu/native.cr
+# native.cr (the FFI declarations generated from webgpu.h) is committed so a fresh
+# clone builds without running the generator — it is portable and pinned to the
+# wgpu-native version in its header. link.cr is NOT committed: the postinstall
+# (download_wgpu.sh) regenerates it with an absolute -L/-rpath to the local vendor/.
 /src/wgpu/link.cr
 
 # Crystal build
