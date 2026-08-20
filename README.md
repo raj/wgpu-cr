@@ -1,5 +1,11 @@
 # wgpu-cr
 
+[![build](https://img.shields.io/github/actions/workflow/status/raj/wgpu-cr/ci.yml?branch=main&label=build)](https://github.com/raj/wgpu-cr/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/github/actions/workflow/status/raj/wgpu-cr/ci.yml?branch=main&label=tests)](https://github.com/raj/wgpu-cr/actions/workflows/ci.yml)
+[![coverage](https://coveralls.io/repos/github/raj/wgpu-cr/badge.svg?branch=main)](https://coveralls.io/github/raj/wgpu-cr?branch=main)
+[![version](https://img.shields.io/github/v/tag/raj/wgpu-cr?label=version&color=blue)](https://github.com/raj/wgpu-cr/tags)
+[![license](https://img.shields.io/github/license/raj/wgpu-cr?color=blue)](LICENSE)
+
 **Crystal** bindings for [wgpu-native](https://github.com/gfx-rs/wgpu-native) (the Rust implementation of WebGPU), in the spirit of [wgpu-py](https://github.com/pygfx/wgpu-py).
 
 Like wgpu-py, the project exposes two levels:

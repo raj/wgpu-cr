@@ -1,0 +1,42 @@
+name: coverage
+
+# Separate from ci.yml so a coverage/upload hiccup never turns the build/tests
+# badges red — those track ci.yml, this only feeds the coverage badge.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: latest
+
+      - name: Install lavapipe (software Vulkan) and kcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1 kcov
+
+      - name: Fetch wgpu-native (pinned) and generate link flags
+        run: ./scripts/download_wgpu.sh v29.0.0.0
+
+      - name: Build the spec binary (debug info for kcov)
+        run: crystal build spec/wgpu_spec.cr -o bin/spec_runner
+
+      # Measure only src/, and exclude the generated FFI (native.cr) + machine link
+      # flags (link.cr) so the number reflects the hand-written API, not thousands of
+      # untested binding declarations.
+      - name: Run specs under kcov
+        run: kcov --include-path=src --exclude-pattern=native.cr,link.cr "$PWD/coverage" ./bin/spec_runner
+
+      - name: Upload to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: coverage/spec_runner/cobertura.xml
+          format: cobertura
