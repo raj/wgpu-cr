@@ -38,7 +38,9 @@ jobs:
         run: ./scripts/download_wgpu.sh v29.0.0.0
 
       - name: Build the spec binary (debug info for kcov)
-        run: crystal build spec/wgpu_spec.cr -o bin/spec_runner
+        run: |
+          mkdir -p bin
+          crystal build spec/wgpu_spec.cr -o bin/spec_runner
 
       # Measure only src/, and exclude the generated FFI (native.cr) + machine link
       # flags (link.cr) so the number reflects the hand-written API, not thousands of
