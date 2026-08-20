@@ -17,10 +17,15 @@ jobs:
         with:
           crystal: latest
 
+      # kcov is no longer packaged on Ubuntu 24.04, so grab the upstream prebuilt binary
+      # (it extracts to /usr/local/bin/kcov). libdw1/libcurl4 are its runtime deps.
       - name: Install lavapipe (software Vulkan) and kcov
         run: |
           sudo apt-get update
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1 kcov
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1 libdw1 libcurl4
+          curl -fsSL https://github.com/SimonKagstrom/kcov/releases/download/v42/kcov-amd64.tar.gz -o /tmp/kcov.tar.gz
+          sudo tar -C / -xzf /tmp/kcov.tar.gz
+          kcov --version
 
       - name: Fetch wgpu-native (pinned) and generate link flags
         run: ./scripts/download_wgpu.sh v29.0.0.0
