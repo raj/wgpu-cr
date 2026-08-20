@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: latest
+
+      # link.cr is generated (gitignored); the native lib must be present to link
+      # against. Pin the same wgpu-native version the committed bindings + ABI specs
+      # target, so a newer upstream release can't silently shift struct sizes.
+      - name: Fetch wgpu-native (pinned) and generate link flags
+        run: ./scripts/download_wgpu.sh v29.0.0.0
+
+      - name: Run specs
+        run: crystal spec
