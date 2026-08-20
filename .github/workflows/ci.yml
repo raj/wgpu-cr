@@ -15,6 +15,13 @@ jobs:
         with:
           crystal: latest
 
+      # Headless runners have no GPU. Mesa's lavapipe is a software Vulkan device,
+      # so the adapter/device specs (not just the ABI-size checks) can run in CI.
+      - name: Install a software Vulkan adapter (lavapipe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools libvulkan1
+
       # link.cr is generated (gitignored); the native lib must be present to link
       # against. Pin the same wgpu-native version the committed bindings + ABI specs
       # target, so a newer upstream release can't silently shift struct sizes.
