@@ -2,11 +2,12 @@
 #
 #   crystal run examples/triangle.cr
 #
-# Demonstrates the render path: GLFW window → Metal surface → adapter/device →
+# Demonstrates the render path: GLFW window → native surface → adapter/device →
 # render pipeline → per-frame (acquire texture → render pass → present).
 #
-# macOS only for now (uses the Cocoa/Metal native surface). The windowing glue
-# lives in examples/lib_glfw.cr — it is not part of the core binding.
+# macOS uses the Cocoa/Metal native surface, Linux the Wayland native surface.
+# The windowing glue lives in examples/lib_glfw.cr — it is not part of the core
+# binding.
 require "../src/wgpu"
 require "./lib_glfw"
 
@@ -30,8 +31,9 @@ fn fs_main() -> @location(0) vec4<f32> {
 }
 SHADER
 
+{% if flag?(:darwin) %}
 # Creates a wgpu surface backed by a CAMetalLayer attached to the GLFW window.
-def make_metal_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
+def make_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
   ns_window = LibGLFW.get_cocoa_window(window)
 
   none = Pointer(Void).null
@@ -54,6 +56,20 @@ def make_metal_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::
   desc.next_in_chain = pointerof(source).as(Pointer(LibWGPU::ChainedStruct))
   LibWGPU.instance_create_surface(instance, pointerof(desc))
 end
+{% else %}
+# Creates a wgpu surface backed by the GLFW window's wl_surface.
+def make_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
+  source = LibWGPU::SurfaceSourceWaylandSurface.new
+  source.chain.s_type = LibWGPU::SType::SurfaceSourceWaylandSurface
+  source.display = LibGLFW.get_wayland_display
+  source.surface = LibGLFW.get_wayland_window(window)
+
+  desc = LibWGPU::SurfaceDescriptor.new
+  desc.label = WGPU.empty_string_view
+  desc.next_in_chain = pointerof(source).as(Pointer(LibWGPU::ChainedStruct))
+  LibWGPU.instance_create_surface(instance, pointerof(desc))
+end
+{% end %}
 
 # --- Window -----------------------------------------------------------------
 abort "glfwInit failed" if LibGLFW.init == 0
@@ -63,7 +79,7 @@ abort "glfwCreateWindow failed" if window.null?
 
 # --- wgpu setup -------------------------------------------------------------
 instance = WGPU.create_instance
-surface = make_metal_surface(instance, window)
+surface = make_surface(instance, window)
 adapter = WGPU.request_adapter(instance, compatible_surface: surface)
 device = WGPU.request_device(instance, adapter)
 queue = LibWGPU.device_get_queue(device)
