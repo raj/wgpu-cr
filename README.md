@@ -21,13 +21,14 @@ Like wgpu-py, the project exposes two levels:
 - Automatic download of wgpu-native (lib + headers + spec).
 - Full FFI binding generation: **199 functions, 92 structs, 54 enums, 5 bitflags, 23 handles, 10 callbacks**.
 - End-to-end **compute** (tested: a WGSL shader doubling an array on the GPU).
-- **Windowed rendering** — a triangle in a GLFW window via a Metal surface (macOS).
+- **Windowed rendering** — a triangle in a GLFW window via a Metal surface (macOS)
+  or a Wayland surface (Linux).
 - Adapter/device requests and buffer mapping (C ↔ Crystal callbacks).
 - Log forwarding: `wgpuSetLogCallback`/`wgpuSetLogLevel` (wgpu.h) + `WGPU.set_log_stderr(level)`.
 
 🚧 Coming next (wgpu-py parity):
 - A complete object layer (`Device#create_buffer`, etc.) on top of the FFI.
-- Surfaces on Linux (X11/Wayland) and Windows (HWND) — structs are bound, examples pending.
+- Surfaces on X11 and Windows (HWND) — structs are bound, examples pending.
 - Render helpers (vertex buffers, textures, samplers, depth).
 - Bindings for the native `wgpu.h` extensions (DevicePoll, etc.).
 
@@ -35,6 +36,13 @@ Like wgpu-py, the project exposes two levels:
 
 - [Crystal](https://crystal-lang.org) ≥ 1.16
 - `curl` and `unzip`
+
+Linux (Ubuntu), for the windowed example (wgpu-native renders through Vulkan):
+
+```sh
+sudo apt install libglfw3-dev        # GLFW (build + run)
+sudo apt install mesa-vulkan-drivers # Vulkan loader + driver (runtime; vendor drivers otherwise)
+```
 
 ## Installation
 
@@ -98,16 +106,18 @@ crystal run examples/triangle.cr
 ```
 
 Opens a GLFW window and renders a triangle. The windowing glue lives in
-[`examples/lib_glfw.cr`](examples/lib_glfw.cr) (GLFW + a few Objective-C calls
-to attach a `CAMetalLayer`) — kept out of the core binding on purpose.
+[`examples/lib_glfw.cr`](examples/lib_glfw.cr) (GLFW + a few platform calls to
+attach the native surface) — kept out of the core binding on purpose.
 
-- **macOS only** for now (Cocoa/Metal native surface). Linux (X11/Wayland) and
-  Windows (HWND) surfaces are bound in `LibWGPU` but not yet wired into an example.
-- Requires GLFW: `brew install glfw`.
+- **macOS** (Cocoa/Metal native surface) and **Linux** (Wayland native surface).
+  X11 and Windows (HWND) surfaces are bound in `LibWGPU` but not yet wired into
+  an example.
+- Requires GLFW: `brew install glfw` (macOS) or `apt install libglfw3-dev` (Linux).
+  On Linux, wgpu-native renders through Vulkan.
 - `WGPU_FRAMES=N` auto-quits after N frames (used for headless testing).
 
-The render path: GLFW window → Metal surface → adapter/device → render pipeline
-→ per-frame (acquire texture → render pass → present).
+The render path: GLFW window → native surface (Metal/Wayland) → adapter/device
+→ render pipeline → per-frame (acquire texture → render pass → present).
 
 ## Tests
 
@@ -125,8 +135,8 @@ src/wgpu/native.cr            # generated FFI binding (do not edit)
 src/wgpu/link.cr              # generated link flags (do not edit)
 src/wgpu/api.cr               # idiomatic WGPU layer
 examples/compute.cr          # GPU compute (headless)
-examples/triangle.cr         # windowed render (GLFW, macOS)
-examples/lib_glfw.cr         # GLFW + Objective-C glue for the window example
+examples/triangle.cr         # windowed render (GLFW, macOS/Linux)
+examples/lib_glfw.cr         # GLFW + platform glue for the window example
 vendor/wgpu-native/           # downloaded artifacts (gitignored)
 ```
 
