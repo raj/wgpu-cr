@@ -6,7 +6,7 @@
 # core lib): windowing is out of scope for the wgpu binding itself.
 
 {% if flag?(:darwin) %}
-  @[Link(ldflags: "-L/opt/homebrew/lib -lglfw -Wl,-rpath,/opt/homebrew/lib -framework Cocoa -framework QuartzCore -framework Metal -lobjc")]
+  @[Link(ldflags: "-L/opt/homebrew/lib -L/usr/local/lib -lglfw -Wl,-rpath,/opt/homebrew/lib -Wl,-rpath,/usr/local/lib -framework Cocoa -framework QuartzCore -framework Metal -lobjc")]
 {% else %}
   @[Link("glfw")]
 {% end %}
@@ -28,6 +28,8 @@ lib LibGLFW
   {% else %}
     fun get_wayland_display = glfwGetWaylandDisplay : Void*
     fun get_wayland_window = glfwGetWaylandWindow(window : Void*) : Void*
+    fun get_x11_display = glfwGetX11Display : Void*
+    fun get_x11_window = glfwGetX11Window(window : Void*) : LibC::ULong
   {% end %}
 end
 

@@ -1,3 +1,5 @@
+require "log"
+
 # wgpu-native logging (from wgpu.h — not the standard webgpu.h the binding is
 # generated from, so declared here by hand).
 lib LibWGPU
@@ -21,34 +23,44 @@ module WGPU
   class Error < Exception
   end
 
+  Log = ::Log.for("wgpu")
+
   # Non-capturing callback (a valid C function pointer) forwarding wgpu-native's log
-  # to STDERR. Held in a constant so the GC never frees it while the C side holds it.
+  # to the standard Crystal Log. Held in a constant so the GC never frees it while the C side holds it.
   WGPU_LOG_CALLBACK = ->(level : LibWGPU::LogLevel, message : LibWGPU::StringView, _ud : Void*) do
-    STDERR.puts("[wgpu][#{level.to_s.downcase}] #{WGPU.view_to_s(message)}")
+    msg = WGPU.view_to_s(message)
+    case level
+    when LibWGPU::LogLevel::Error then Log.error { msg }
+    when LibWGPU::LogLevel::Warn  then Log.warn { msg }
+    when LibWGPU::LogLevel::Info  then Log.info { msg }
+    when LibWGPU::LogLevel::Debug then Log.debug { msg }
+    when LibWGPU::LogLevel::Trace then Log.trace { msg }
+    else                               Log.info { msg }
+    end
     nil
   end
 
-  # Forwards wgpu-native's internal log to STDERR at (and above) `level`. The internal
-  # log carries the real cause behind terse "Validation Error" messages.
+  # Forwards wgpu-native's internal log to Crystal's Log (STDERR by default) at (and above) `level`.
+  # The internal log carries the real cause behind terse "Validation Error" messages.
   def self.set_log_stderr(level : LibWGPU::LogLevel = LibWGPU::LogLevel::Warn) : Nil
     LibWGPU.set_log_callback(WGPU_LOG_CALLBACK, Pointer(Void).null)
     LibWGPU.set_log_level(level)
   end
 
   # Default device-lost callback installed by `request_device`, logging the
-  # reason to STDERR. Non-capturing (a valid C function pointer), held in a
+  # reason via Log. Non-capturing (a valid C function pointer), held in a
   # constant so the GC never frees it while the C side holds it.
   WGPU_DEVICE_LOST_CALLBACK = ->(_device : LibWGPU::Device*, reason : LibWGPU::DeviceLostReason, message : LibWGPU::StringView, _u1 : Void*, _u2 : Void*) do
-    STDERR.puts("[wgpu] device lost (#{reason}): #{WGPU.view_to_s(message)}")
+    Log.error { "device lost (#{reason}): #{WGPU.view_to_s(message)}" }
     nil
   end
 
   # Default uncaptured-error callback installed by `request_device`, logging
-  # validation / out-of-memory / internal errors to STDERR. Without it the
+  # validation / out-of-memory / internal errors via Log. Without it the
   # zeroed descriptor default delivers uncaptured errors nowhere, so they
   # vanish silently. Same non-capturing rules as above.
   WGPU_UNCAPTURED_ERROR_CALLBACK = ->(_device : LibWGPU::Device*, type : LibWGPU::ErrorType, message : LibWGPU::StringView, _u1 : Void*, _u2 : Void*) do
-    STDERR.puts("[wgpu] uncaptured error (#{type}): #{WGPU.view_to_s(message)}")
+    Log.error { "uncaptured error (#{type}): #{WGPU.view_to_s(message)}" }
     nil
   end
 
@@ -72,7 +84,12 @@ module WGPU
     LibWGPU::StringView.new(data: str.to_unsafe, length: str.bytesize.to_u64)
   end
 
-  # Empty (NULL) view — used for optional labels.
+  # Canonical NULL StringView ({NULL, WGPU_STRLEN}) per webgpu.h.
+  def self.null_string_view : LibWGPU::StringView
+    LibWGPU::StringView.new(data: Pointer(LibC::Char).null, length: LibC::SizeT::MAX)
+  end
+
+  # Empty view with 0 length — used for optional labels.
   def self.empty_string_view : LibWGPU::StringView
     LibWGPU::StringView.new(data: Pointer(LibC::Char).null, length: 0_u64)
   end
@@ -80,25 +97,29 @@ module WGPU
   # Converts a `WGPUStringView` returned by the C side into a Crystal String.
   # Named `view_to_s` (not `to_s`) so it does not shadow the reserved module
   # `to_s` — overriding that would give `WGPU.to_s` a foreign signature.
+  # Handles both explicit-length views and null-terminated views (WGPU_STRLEN / SIZE_MAX).
   def self.view_to_s(view : LibWGPU::StringView) : String
     return "" if view.data.null? || view.length == 0
-    String.new(view.data.as(UInt8*), view.length)
+    if view.length == LibC::SizeT::MAX
+      String.new(view.data.as(UInt8*))
+    else
+      String.new(view.data.as(UInt8*), view.length)
+    end
   end
 
   # ------------------------------------------------------------------
   # Feature queries
   #
-  # The raw `*_has_feature` funs in native.cr are typed to return `LibWGPU::Bool`,
-  # which is an alias for `UInt32` (that is what WGPUBool is on the C side). In
-  # Crystal EVERY integer is truthy — even `0_u32` — so writing
+  # The raw `*_has_feature` funs in native.cr return `LibWGPU::CBool` (UInt32).
+  # In Crystal EVERY integer is truthy — even `0_u32` — so writing
   #   if LibWGPU.device_has_feature(device, feature)
   # is ALWAYS taken, silently, regardless of the real answer. These thin helpers
   # convert the C boolean to a genuine Crystal `Bool` via `!= 0` so they behave
-  # correctly in conditionals. The raw lib signatures are deliberately left
-  # unchanged (they must keep matching the C ABI).
+  # correctly in conditionals.
   # ------------------------------------------------------------------
 
   # True if the wgpu-native instance layer supports `feature`.
+  # NOTE: In wgpu-native v29, `wgpuHasInstanceFeature` is an unimplemented stub in Rust that panics.
   def self.has_instance_feature?(feature : LibWGPU::InstanceFeatureName) : Bool
     LibWGPU.has_instance_feature(feature) != 0
   end
@@ -128,6 +149,16 @@ module WGPU
     inst
   end
 
+  # Yields an instance and guarantees release upon block exit.
+  def self.create_instance(& : LibWGPU::Instance ->)
+    inst = create_instance
+    begin
+      yield inst
+    ensure
+      LibWGPU.instance_release(inst)
+    end
+  end
+
   # ------------------------------------------------------------------
   # Adapter request (asynchronous in C, exposed synchronously here).
   #
@@ -145,7 +176,8 @@ module WGPU
 
   def self.request_adapter(instance : LibWGPU::Instance,
                            power_preference : LibWGPU::PowerPreference = LibWGPU::PowerPreference::HighPerformance,
-                           compatible_surface : LibWGPU::Surface = WGPU.null(LibWGPU::Surface)) : LibWGPU::Adapter
+                           compatible_surface : LibWGPU::Surface = WGPU.null(LibWGPU::Surface),
+                           timeout : Time::Span = 5.seconds) : LibWGPU::Adapter
     # Box the result on the heap: the C side keeps this pointer as `userdata1`
     # and may fire the callback after a timeout has already unwound this frame,
     # so it must not point at the stack (see `wait_until` / PENDING_TIMEOUT_RESULTS).
@@ -171,12 +203,26 @@ module WGPU
     info.userdata1 = result.as(Void*)
 
     LibWGPU.instance_request_adapter(instance, pointerof(options), info)
-    wait_until(instance, result.as(Void*)) { result.value.done }
+    wait_until(instance, result.as(Void*), timeout) { result.value.done }
 
     unless result.value.status.success?
       raise Error.new("request_adapter failed: #{result.value.status} #{result.value.message}")
     end
     result.value.handle
+  end
+
+  # Yields an adapter and guarantees release upon block exit.
+  def self.request_adapter(instance : LibWGPU::Instance,
+                           power_preference : LibWGPU::PowerPreference = LibWGPU::PowerPreference::HighPerformance,
+                           compatible_surface : LibWGPU::Surface = WGPU.null(LibWGPU::Surface),
+                           timeout : Time::Span = 5.seconds,
+                           & : LibWGPU::Adapter ->)
+    adapter = request_adapter(instance, power_preference, compatible_surface, timeout)
+    begin
+      yield adapter
+    ensure
+      LibWGPU.adapter_release(adapter)
+    end
   end
 
   # ------------------------------------------------------------------
@@ -190,7 +236,10 @@ module WGPU
     property done : Bool = false
   end
 
-  def self.request_device(instance : LibWGPU::Instance, adapter : LibWGPU::Adapter) : LibWGPU::Device
+  def self.request_device(instance : LibWGPU::Instance, adapter : LibWGPU::Adapter,
+                          device_lost_callback : LibWGPU::DeviceLostCallback? = nil,
+                          uncaptured_error_callback : LibWGPU::UncapturedErrorCallback? = nil,
+                          timeout : Time::Span = 5.seconds) : LibWGPU::Device
     # Box on the heap — see `request_adapter` / `wait_until` for why the
     # callback's `userdata1` must outlive a timed-out stack frame.
     result = Pointer(DeviceResult).malloc(1)
@@ -200,15 +249,15 @@ module WGPU
 
     # Default error plumbing: wgpu-native only delivers uncaptured errors and
     # device-loss through these callbacks, and the zeroed default ("no
-    # callback") drops them on the floor. Route both to STDERR. Note: the
+    # callback") drops them on the floor. Route both to STDERR/Log. Note: the
     # uncaptured-error info has no `mode` field in webgpu.h — it fires
     # synchronously at the offending call, so no CallbackMode applies to it.
     descriptor.device_lost_callback_info = LibWGPU::DeviceLostCallbackInfo.new(
       mode: LibWGPU::CallbackMode::AllowProcessEvents,
-      callback: WGPU_DEVICE_LOST_CALLBACK,
+      callback: device_lost_callback || WGPU_DEVICE_LOST_CALLBACK,
     )
     descriptor.uncaptured_error_callback_info = LibWGPU::UncapturedErrorCallbackInfo.new(
-      callback: WGPU_UNCAPTURED_ERROR_CALLBACK,
+      callback: uncaptured_error_callback || WGPU_UNCAPTURED_ERROR_CALLBACK,
     )
 
     callback = ->(status : LibWGPU::RequestDeviceStatus, device : LibWGPU::Device, message : LibWGPU::StringView, u1 : Void*, _u2 : Void*) do
@@ -226,12 +275,26 @@ module WGPU
     info.userdata1 = result.as(Void*)
 
     LibWGPU.adapter_request_device(adapter, pointerof(descriptor), info)
-    wait_until(instance, result.as(Void*)) { result.value.done }
+    wait_until(instance, result.as(Void*), timeout) { result.value.done }
 
     unless result.value.status.success?
       raise Error.new("request_device failed: #{result.value.status} #{result.value.message}")
     end
     result.value.handle
+  end
+
+  # Yields a device and guarantees release upon block exit.
+  def self.request_device(instance : LibWGPU::Instance, adapter : LibWGPU::Adapter,
+                          device_lost_callback : LibWGPU::DeviceLostCallback? = nil,
+                          uncaptured_error_callback : LibWGPU::UncapturedErrorCallback? = nil,
+                          timeout : Time::Span = 5.seconds,
+                          & : LibWGPU::Device ->)
+    device = request_device(instance, adapter, device_lost_callback, uncaptured_error_callback, timeout)
+    begin
+      yield device
+    ensure
+      LibWGPU.device_release(device)
+    end
   end
 
   # ------------------------------------------------------------------
@@ -244,7 +307,8 @@ module WGPU
     property done : Bool = false
   end
 
-  def self.map_buffer_read(instance : LibWGPU::Instance, buffer : LibWGPU::Buffer, size : UInt64, offset : UInt64 = 0_u64)
+  def self.map_buffer_read(instance : LibWGPU::Instance, buffer : LibWGPU::Buffer, size : UInt64, offset : UInt64 = 0_u64,
+                           timeout : Time::Span = 5.seconds)
     # Box on the heap — see `request_adapter` / `wait_until` for why the
     # callback's `userdata1` must outlive a timed-out stack frame.
     result = Pointer(MapResult).malloc(1)
@@ -263,8 +327,8 @@ module WGPU
     info.callback = callback
     info.userdata1 = result.as(Void*)
 
-    LibWGPU.buffer_map_async(buffer, LibWGPU::MapMode::Read, offset, size, info)
-    wait_until(instance, result.as(Void*)) { result.value.done }
+    LibWGPU.buffer_map_async(buffer, LibWGPU::MapMode::Read, LibC::SizeT.new(offset), LibC::SizeT.new(size), info)
+    wait_until(instance, result.as(Void*), timeout) { result.value.done }
 
     unless result.value.status.success?
       raise Error.new("buffer_map_async failed: #{result.value.status} #{result.value.message}")
@@ -277,6 +341,7 @@ module WGPU
   # raised; keeping the box referenced here means it lands in live memory
   # rather than an allocation the GC has reclaimed and reused. Only ever grows
   # on the fatal timeout path (which raises), so it does not leak in practice.
+  PENDING_TIMEOUT_MUTEX   = Mutex.new
   PENDING_TIMEOUT_RESULTS = [] of Void*
 
   # Pumps the instance event loop until `block` returns true.
@@ -288,21 +353,26 @@ module WGPU
   # reclaimed memory.
   #
   # NOTE: wgpu-native's `wgpuInstanceWaitAny` (a native timed wait, exposed as
-  # `LibWGPU.instance_wait_any`) would avoid the 1 kHz polling, but in the
+  # `LibWGPU.instance_wait_any`) would avoid the polling, but in the
   # vendored v29 binary that entry point is an `unimplemented!()` stub that
   # aborts the process (verified: both poll-mode timeout=0 and timed waits
   # panic, with or without the TimedWaitAny instance feature). Keep polling
   # `wgpuInstanceProcessEvents` until wgpu-native actually implements it.
-  private def self.wait_until(instance : LibWGPU::Instance, keep_alive : Void* = Pointer(Void).null, max_iterations = 100_000, &block : -> Bool)
-    iterations = 0
+  private def self.wait_until(instance : LibWGPU::Instance,
+                              keep_alive : Void* = Pointer(Void).null,
+                              timeout : Time::Span = 5.seconds,
+                              &block : -> Bool)
+    start_time = Time.monotonic
     until block.call
       LibWGPU.instance_process_events(instance)
-      sleep(1.millisecond)
-      iterations += 1
-      if iterations > max_iterations
-        PENDING_TIMEOUT_RESULTS << keep_alive unless keep_alive.null?
+      break if block.call
+      if Time.monotonic - start_time > timeout
+        PENDING_TIMEOUT_MUTEX.synchronize do
+          PENDING_TIMEOUT_RESULTS << keep_alive unless keep_alive.null?
+        end
         raise Error.new("timed out waiting for a wgpu callback")
       end
+      sleep(1.millisecond)
     end
   end
 
@@ -322,16 +392,16 @@ module WGPU
   def self.release_pass(command_buffer : LibWGPU::CommandBuffer,
                         pass : LibWGPU::RenderPassEncoder,
                         encoder : LibWGPU::CommandEncoder) : Nil
-    LibWGPU.command_buffer_release(command_buffer)
-    LibWGPU.render_pass_encoder_release(pass)
-    LibWGPU.command_encoder_release(encoder)
+    LibWGPU.command_buffer_release(command_buffer) unless command_buffer.null?
+    LibWGPU.render_pass_encoder_release(pass) unless pass.null?
+    LibWGPU.command_encoder_release(encoder) unless encoder.null?
   end
 
   # Releases a surface frame's view and its backing surface texture (after
   # `surface_present`).
   def self.release_surface(view : LibWGPU::TextureView, texture : LibWGPU::Texture) : Nil
-    LibWGPU.texture_view_release(view)
-    LibWGPU.texture_release(texture)
+    LibWGPU.texture_view_release(view) unless view.null?
+    LibWGPU.texture_release(texture) unless texture.null?
   end
 
   # ==================================================================
@@ -364,14 +434,21 @@ module WGPU
     mod
   end
 
+  # Yields a shader module and guarantees release upon block exit.
+  def self.create_shader_module(device : LibWGPU::Device, wgsl : String, label : String? = nil, & : LibWGPU::ShaderModule ->)
+    mod = create_shader_module(device, wgsl, label)
+    begin
+      yield mod
+    ensure
+      LibWGPU.shader_module_release(mod)
+    end
+  end
+
   # Allocates a GPU buffer of `size` bytes with the given usage flags.
   #
   #   WGPU.create_buffer(device, 1024_u64, LibWGPU::BufferUsage::Storage | LibWGPU::BufferUsage::CopySrc)
   def self.create_buffer(device : LibWGPU::Device, size : UInt64, usage : LibWGPU::BufferUsage,
                          label : String? = nil, mapped_at_creation : Bool = false) : LibWGPU::Buffer
-    # The `mapped_at_creation` field is declared `Bool` in native.cr but wgpu's
-    # WGPUBool is a uint32: assigning a Crystal Bool trips a to_unsafe mismatch,
-    # so feed it 0/1 (same trick as examples/compute.cr).
     desc = LibWGPU::BufferDescriptor.new(
       label: label ? string_view(label) : empty_string_view,
       usage: usage,
@@ -381,6 +458,17 @@ module WGPU
     buffer = LibWGPU.device_create_buffer(device, pointerof(desc))
     raise Error.new("device_create_buffer returned NULL") if buffer.null?
     buffer
+  end
+
+  # Yields a buffer and guarantees release upon block exit.
+  def self.create_buffer(device : LibWGPU::Device, size : UInt64, usage : LibWGPU::BufferUsage,
+                         label : String? = nil, mapped_at_creation : Bool = false, & : LibWGPU::Buffer ->)
+    buffer = create_buffer(device, size, usage, label, mapped_at_creation)
+    begin
+      yield buffer
+    ensure
+      LibWGPU.buffer_release(buffer)
+    end
   end
 
   # Allocates a buffer and uploads `data` into it in one step. `CopyDst` is
@@ -396,12 +484,27 @@ module WGPU
     buffer
   end
 
+  # Yields a buffer with uploaded data and guarantees release upon block exit.
+  def self.create_buffer_with_data(device : LibWGPU::Device, data : Slice, usage : LibWGPU::BufferUsage,
+                                   label : String? = nil, & : LibWGPU::Buffer ->)
+    buffer = create_buffer_with_data(device, data, usage, label)
+    begin
+      yield buffer
+    ensure
+      LibWGPU.buffer_release(buffer)
+    end
+  end
+
   # Uploads `data` (any typed Slice, e.g. `Slice(Float32)` or `Bytes`) into an
   # existing buffer at `offset` bytes. The buffer must have `CopyDst` usage.
   def self.write_buffer(device : LibWGPU::Device, buffer : LibWGPU::Buffer, data : Slice, offset : UInt64 = 0_u64) : Nil
     queue = LibWGPU.device_get_queue(device)
-    LibWGPU.queue_write_buffer(queue, buffer, offset, data.to_unsafe.as(Pointer(Void)), LibC::SizeT.new(data.bytesize))
-    LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+    raise Error.new("device_get_queue returned NULL") if queue.null?
+    begin
+      LibWGPU.queue_write_buffer(queue, buffer, offset, data.to_unsafe.as(Pointer(Void)), LibC::SizeT.new(data.bytesize))
+    ensure
+      LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+    end
   end
 
   # Creates a compute pipeline from a shader module and entry point.
@@ -423,11 +526,34 @@ module WGPU
     pipeline
   end
 
+  # Yields a compute pipeline and guarantees release upon block exit.
+  def self.create_compute_pipeline(device : LibWGPU::Device, mod : LibWGPU::ShaderModule,
+                                   entry_point : String = "main",
+                                   layout : LibWGPU::PipelineLayout = WGPU.null(LibWGPU::PipelineLayout),
+                                   label : String? = nil, & : LibWGPU::ComputePipeline ->)
+    pipeline = create_compute_pipeline(device, mod, entry_point, layout, label)
+    begin
+      yield pipeline
+    ensure
+      LibWGPU.compute_pipeline_release(pipeline)
+    end
+  end
+
   # Returns the auto-derived bind group layout of a compute pipeline for `group`.
   def self.compute_bind_group_layout(pipeline : LibWGPU::ComputePipeline, group : UInt32 = 0_u32) : LibWGPU::BindGroupLayout
     layout = LibWGPU.compute_pipeline_get_bind_group_layout(pipeline, group)
     raise Error.new("compute_pipeline_get_bind_group_layout returned NULL") if layout.null?
     layout
+  end
+
+  # Yields the auto-derived bind group layout and guarantees release upon block exit.
+  def self.compute_bind_group_layout(pipeline : LibWGPU::ComputePipeline, group : UInt32 = 0_u32, & : LibWGPU::BindGroupLayout ->)
+    layout = compute_bind_group_layout(pipeline, group)
+    begin
+      yield layout
+    ensure
+      LibWGPU.bind_group_layout_release(layout)
+    end
   end
 
   # Binds buffers to a layout. Each entry is `{binding, buffer, size_in_bytes}`
@@ -455,6 +581,18 @@ module WGPU
     bind_group
   end
 
+  # Yields a bind group and guarantees release upon block exit.
+  def self.create_bind_group(device : LibWGPU::Device, layout : LibWGPU::BindGroupLayout,
+                             buffers : Array(Tuple(UInt32, LibWGPU::Buffer, UInt64)),
+                             label : String? = nil, & : LibWGPU::BindGroup ->)
+    bind_group = create_bind_group(device, layout, buffers, label)
+    begin
+      yield bind_group
+    ensure
+      LibWGPU.bind_group_release(bind_group)
+    end
+  end
+
   # Records and submits a single compute pass: set pipeline + bind group (at
   # group 0), dispatch `(x, y, z)` workgroups, submit to the queue.
   #
@@ -463,11 +601,13 @@ module WGPU
   def self.dispatch(device : LibWGPU::Device, pipeline : LibWGPU::ComputePipeline, bind_group : LibWGPU::BindGroup,
                     workgroups_x : UInt32, workgroups_y : UInt32 = 1_u32, workgroups_z : UInt32 = 1_u32) : Nil
     queue = LibWGPU.device_get_queue(device)
+    raise Error.new("device_get_queue returned NULL") if queue.null?
 
     # Track the transient encoder/pass so `ensure` can release them even if a
     # raise fires mid-record; both start NULL and are released only once created.
     encoder = WGPU.null(LibWGPU::CommandEncoder)
     pass = WGPU.null(LibWGPU::ComputePassEncoder)
+    cmd = WGPU.null(LibWGPU::CommandBuffer)
     begin
       enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
       encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
@@ -484,9 +624,11 @@ module WGPU
 
       cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
       cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+      raise Error.new("command_encoder_finish returned NULL") if cmd.null?
+
       LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
-      LibWGPU.command_buffer_release(cmd)
     ensure
+      LibWGPU.command_buffer_release(cmd) unless cmd.null?
       LibWGPU.compute_pass_encoder_release(pass) unless pass.null?
       LibWGPU.command_encoder_release(encoder) unless encoder.null?
       LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
@@ -508,15 +650,27 @@ module WGPU
     mapped = false
     begin
       queue = LibWGPU.device_get_queue(device)
-      enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
-      encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
-      LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
-      cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
-      cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
-      LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
-      LibWGPU.command_buffer_release(cmd)
-      LibWGPU.command_encoder_release(encoder)
-      LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+      raise Error.new("device_get_queue returned NULL") if queue.null?
+      begin
+        enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
+        encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
+        raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
+        begin
+          LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
+          cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+          cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+          raise Error.new("command_encoder_finish returned NULL") if cmd.null?
+          begin
+            LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
+          ensure
+            LibWGPU.command_buffer_release(cmd)
+          end
+        ensure
+          LibWGPU.command_encoder_release(encoder)
+        end
+      ensure
+        LibWGPU.queue_release(queue) # device_get_queue returns an owned (ref-counted) handle
+      end
 
       map_buffer_read(instance, staging, size)
       mapped = true

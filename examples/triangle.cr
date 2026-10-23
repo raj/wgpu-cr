@@ -32,43 +32,63 @@ fn fs_main() -> @location(0) vec4<f32> {
 SHADER
 
 {% if flag?(:darwin) %}
-# Creates a wgpu surface backed by a CAMetalLayer attached to the GLFW window.
-def make_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
-  ns_window = LibGLFW.get_cocoa_window(window)
+  # Creates a wgpu surface backed by a CAMetalLayer attached to the GLFW window.
+  def make_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
+    ns_window = LibGLFW.get_cocoa_window(window)
 
-  none = Pointer(Void).null
+    none = Pointer(Void).null
 
-  # layer = [CAMetalLayer layer]
-  metal_class = LibObjC.get_class("CAMetalLayer")
-  layer = LibObjC.msg_send(metal_class, LibObjC.register_name("layer"), none)
+    # layer = [CAMetalLayer layer]
+    metal_class = LibObjC.get_class("CAMetalLayer")
+    layer = LibObjC.msg_send(metal_class, LibObjC.register_name("layer"), none)
 
-  # view = [ns_window contentView]; [view setWantsLayer:YES]; [view setLayer:layer]
-  view = LibObjC.msg_send(ns_window, LibObjC.register_name("contentView"), none)
-  LibObjC.msg_send(view, LibObjC.register_name("setWantsLayer:"), Pointer(Void).new(1_u64)) # YES
-  LibObjC.msg_send(view, LibObjC.register_name("setLayer:"), layer)
+    # view = [ns_window contentView]; [view setWantsLayer:YES]; [view setLayer:layer]
+    view = LibObjC.msg_send(ns_window, LibObjC.register_name("contentView"), none)
+    LibObjC.msg_send(view, LibObjC.register_name("setWantsLayer:"), Pointer(Void).new(1_u64)) # YES
+    LibObjC.msg_send(view, LibObjC.register_name("setLayer:"), layer)
 
-  source = LibWGPU::SurfaceSourceMetalLayer.new
-  source.chain.s_type = LibWGPU::SType::SurfaceSourceMetalLayer
-  source.layer = layer
+    source = LibWGPU::SurfaceSourceMetalLayer.new(
+      chain: LibWGPU::ChainedStruct.new(s_type: LibWGPU::SType::SurfaceSourceMetalLayer),
+      layer: layer,
+    )
 
-  desc = LibWGPU::SurfaceDescriptor.new
-  desc.label = WGPU.empty_string_view
-  desc.next_in_chain = pointerof(source).as(Pointer(LibWGPU::ChainedStruct))
-  LibWGPU.instance_create_surface(instance, pointerof(desc))
-end
+    desc = LibWGPU::SurfaceDescriptor.new(
+      label: WGPU.empty_string_view,
+      next_in_chain: pointerof(source).as(Pointer(LibWGPU::ChainedStruct)),
+    )
+    LibWGPU.instance_create_surface(instance, pointerof(desc))
+  end
 {% else %}
-# Creates a wgpu surface backed by the GLFW window's wl_surface.
-def make_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
-  source = LibWGPU::SurfaceSourceWaylandSurface.new
-  source.chain.s_type = LibWGPU::SType::SurfaceSourceWaylandSurface
-  source.display = LibGLFW.get_wayland_display
-  source.surface = LibGLFW.get_wayland_window(window)
+  # Creates a wgpu surface backed by Wayland wl_surface or X11 Window.
+  def make_surface(instance : LibWGPU::Instance, window : Void*) : LibWGPU::Surface
+    wl_display = LibGLFW.get_wayland_display
+    if !wl_display.null?
+      wl_source = LibWGPU::SurfaceSourceWaylandSurface.new
+      wl_source.chain.s_type = LibWGPU::SType::SurfaceSourceWaylandSurface
+      wl_source.display = wl_display
+      wl_source.surface = LibGLFW.get_wayland_window(window)
 
-  desc = LibWGPU::SurfaceDescriptor.new
-  desc.label = WGPU.empty_string_view
-  desc.next_in_chain = pointerof(source).as(Pointer(LibWGPU::ChainedStruct))
-  LibWGPU.instance_create_surface(instance, pointerof(desc))
-end
+      wl_desc = LibWGPU::SurfaceDescriptor.new
+      wl_desc.label = WGPU.empty_string_view
+      wl_desc.next_in_chain = pointerof(wl_source).as(Pointer(LibWGPU::ChainedStruct))
+      return LibWGPU.instance_create_surface(instance, pointerof(wl_desc))
+    end
+
+    x11_display = LibGLFW.get_x11_display
+    if !x11_display.null?
+      x11_source = LibWGPU::SurfaceSourceXlibWindow.new
+      x11_source.chain.s_type = LibWGPU::SType::SurfaceSourceXlibWindow
+      x11_source.display = x11_display
+      x11_source.window = LibGLFW.get_x11_window(window).to_u64
+
+      x11_desc = LibWGPU::SurfaceDescriptor.new
+      x11_desc.label = WGPU.empty_string_view
+      x11_desc.next_in_chain = pointerof(x11_source).as(Pointer(LibWGPU::ChainedStruct))
+      return LibWGPU.instance_create_surface(instance, pointerof(x11_desc))
+    end
+
+    abort "Neither Wayland nor X11 display available from GLFW"
+  end
 {% end %}
 
 # --- Window -----------------------------------------------------------------
@@ -175,7 +195,7 @@ while LibGLFW.window_should_close(window) == 0
 
   color = LibWGPU::RenderPassColorAttachment.new
   color.view = view
-  color.depth_slice = 0xFFFFFFFF_u32 # WGPU_DEPTH_SLICE_UNDEFINED
+  color.depth_slice = LibWGPU::DEPTH_SLICE_UNDEFINED
   color.load_op = LibWGPU::LoadOp::Clear
   color.store_op = LibWGPU::StoreOp::Store
   color.clear_value = LibWGPU::Color.new(r: 0.02, g: 0.02, b: 0.05, a: 1.0)
@@ -202,11 +222,8 @@ while LibGLFW.window_should_close(window) == 0
 
   LibWGPU.surface_present(surface)
 
-  LibWGPU.command_buffer_release(cmd)
-  LibWGPU.render_pass_encoder_release(pass)
-  LibWGPU.command_encoder_release(encoder)
-  LibWGPU.texture_view_release(view)
-  LibWGPU.texture_release(st.texture)
+  WGPU.release_pass(cmd, pass, encoder)
+  WGPU.release_surface(view, st.texture)
   frame += 1
 end
 

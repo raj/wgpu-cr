@@ -69,7 +69,7 @@ end
 def type_name(c : String) : String
   n = c.lchop("WGPU")
   case n
-  when "Bool"  then "Bool" # alias defined inside the lib
+  when "Bool"  then "CBool" # alias defined inside the lib (WGPUBool = uint32_t)
   when "Flags" then "Flags"
   when "Proc"  then "ProcFn" # avoid clashing with Crystal's ::Proc
   else              n
@@ -121,15 +121,29 @@ flags = [] of {String, Array({String, String})}
 callbacks = [] of {String, String, String} # name, raw params, raw return
 structs = [] of {String, Array({String, String})}
 funcs = [] of {String, String, String, String} # crystal_name, c_name, params, ret
+constants = [] of {String, String}
+
+# Constants: #define WGPU_NAME (VALUE)
+src.scan(/#define\s+WGPU_([A-Z0-9_]+)\s+\(([^)]+)\)/) do |m|
+  name = m[1]
+  val = m[2].strip
+  next if name.ends_with?("_ATTRIBUTE") || name == "NULLABLE"
+  cry_val = case val
+            when "UINT32_C(1)" then "1_u32"
+            when "UINT32_C(0)" then "0_u32"
+            when "UINT32_MAX"  then "UInt32::MAX"
+            when "UINT64_MAX"  then "UInt64::MAX"
+            when "SIZE_MAX"    then "LibC::SizeT::MAX"
+            when "NAN"         then "Float32::NAN"
+            else                    nil
+            end
+  constants << {name, cry_val} if cry_val
+end
 
 # Opaque handles: typedef struct XImpl* WGPUX;
 src.scan(/typedef\s+struct\s+\w+Impl\s*\*\s*(WGPU\w+)\s*;/) do |m|
   handles << type_name(m[1])
 end
-
-# Special base typedefs.
-bool_alias = src.matches?(/typedef\s+uint32_t\s+WGPUBool\s*;/)
-flags_alias = src.matches?(/typedef\s+uint64_t\s+WGPUFlags\s*;/)
 
 # Enums: typedef enum WGPUName { ... } WGPUName;
 src.scan(/typedef\s+enum\s+(WGPU\w+)\s*\{(.*?)\}\s*WGPU\w+\s*;/m) do |m|
@@ -217,12 +231,18 @@ io << <<-HEADER
 require "./link"
 
 lib LibWGPU
-  alias Bool  = UInt32
+  alias CBool = UInt32
+  alias Bool  = CBool # backward compatibility alias
   alias Flags = UInt64
   alias ProcFn = -> Void
 
-
 HEADER
+
+io << "  # --- Constants ---\n"
+constants.each do |cname, cval|
+  io << "  #{cname} = #{cval}\n"
+end
+io << "\n"
 
 io << "  # --- Opaque handles ---\n"
 handles.sort.each { |h| io << "  type #{h} = Void*\n" }
@@ -274,8 +294,10 @@ io << "end\n"
 
 Dir.mkdir_p(File.dirname(OUT))
 File.write(OUT, io.to_s)
+Process.run("crystal", ["tool", "format", OUT])
 
 puts "Generated #{OUT}"
+puts "  constants: #{constants.size}"
 puts "  handles:   #{handles.size}"
 puts "  enums:     #{enums.size}"
 puts "  bitflags:  #{flags.size}"

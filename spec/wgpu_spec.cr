@@ -107,6 +107,18 @@ describe WGPU do
 
     output.should eq(input.map { |v| v * 2 })
 
+    LibWGPU.buffer_release(readback)
+    LibWGPU.command_buffer_release(cmd)
+    LibWGPU.compute_pass_encoder_release(pass)
+    LibWGPU.command_encoder_release(encoder)
+    LibWGPU.bind_group_release(bind_group)
+    LibWGPU.bind_group_layout_release(bgl)
+    LibWGPU.compute_pipeline_release(pipeline)
+    LibWGPU.shader_module_release(shader)
+    LibWGPU.buffer_release(storage)
+    LibWGPU.queue_release(queue)
+    LibWGPU.device_release(device)
+    LibWGPU.adapter_release(adapter)
     LibWGPU.instance_release(instance)
   end
 
@@ -143,7 +155,103 @@ describe WGPU do
 
     output.should eq(input.to_a.map { |v| v * 2 })
 
+    LibWGPU.bind_group_release(bind_group)
+    LibWGPU.bind_group_layout_release(layout)
+    LibWGPU.compute_pipeline_release(pipeline)
+    LibWGPU.shader_module_release(shader)
+    LibWGPU.buffer_release(storage)
+    LibWGPU.device_release(device)
+    LibWGPU.adapter_release(adapter)
     LibWGPU.instance_release(instance)
+  end
+
+  it "runs compute with block-based RAII helpers" do
+    input = Slice(Float32).new(16) { |i| (i + 1).to_f32 }
+    size = input.bytesize.to_u64
+
+    WGPU.create_instance do |instance|
+      WGPU.request_adapter(instance) do |adapter|
+        WGPU.request_device(instance, adapter) do |device|
+          WGPU.create_buffer_with_data(device, input, LibWGPU::BufferUsage::Storage | LibWGPU::BufferUsage::CopySrc) do |storage|
+            wgsl_src = <<-W
+            @group(0) @binding(0) var<storage, read_write> d: array<f32>;
+            @compute @workgroup_size(16) fn main(@builtin(global_invocation_id) g: vec3<u32>) {
+              if (g.x < arrayLength(&d)) { d[g.x] = d[g.x] * 3.0; }
+            }
+            W
+            WGPU.create_shader_module(device, wgsl_src) do |shader|
+              WGPU.create_compute_pipeline(device, shader) do |pipeline|
+                WGPU.compute_bind_group_layout(pipeline) do |layout|
+                  WGPU.create_bind_group(device, layout, [{0_u32, storage, size}]) do |bind_group|
+                    WGPU.dispatch(device, pipeline, bind_group, 1_u32)
+                    bytes = WGPU.read_buffer(instance, device, storage, size)
+                    output = bytes.unsafe_slice_of(Float32).to_a
+                    output.should eq(input.to_a.map { |v| v * 3 })
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  it "handles StringView conversions safely" do
+    # Null view
+    null_view = WGPU.null_string_view
+    WGPU.view_to_s(null_view).should eq("")
+
+    # Empty view
+    empty_view = WGPU.empty_string_view
+    WGPU.view_to_s(empty_view).should eq("")
+
+    # Explicit length
+    str = "hello wgpu"
+    view = WGPU.string_view(str)
+    WGPU.view_to_s(view).should eq("hello wgpu")
+
+    # Null-terminated string with sentinel length = WGPU_STRLEN (SIZE_MAX)
+    nt_bytes = "test string\0".to_slice
+    sentinel_view = LibWGPU::StringView.new(data: nt_bytes.to_unsafe.as(Pointer(LibC::Char)), length: LibC::SizeT::MAX)
+    WGPU.view_to_s(sentinel_view).should eq("test string")
+  end
+
+  it "exposes WebGPU constants on LibWGPU" do
+    LibWGPU::DEPTH_SLICE_UNDEFINED.should eq(UInt32::MAX)
+    LibWGPU::LIMIT_U32_UNDEFINED.should eq(UInt32::MAX)
+    LibWGPU::LIMIT_U64_UNDEFINED.should eq(UInt64::MAX)
+    LibWGPU::STRLEN.should eq(LibC::SizeT::MAX)
+    LibWGPU::WHOLE_SIZE.should eq(UInt64::MAX)
+    LibWGPU::DEPTH_CLEAR_VALUE_UNDEFINED.nan?.should be_true
+  end
+
+  it "queries adapter and device features without boolean evaluation bugs" do
+    WGPU.create_instance do |instance|
+      WGPU.request_adapter(instance) do |adapter|
+        WGPU.adapter_has_feature?(adapter, LibWGPU::FeatureName::TextureCompressionBC).should be_a(Bool)
+
+        WGPU.request_device(instance, adapter) do |device|
+          WGPU.device_has_feature?(device, LibWGPU::FeatureName::TextureCompressionBC).should be_a(Bool)
+        end
+      end
+    end
+  end
+
+  it "provides helper WGPU.null and safe release helpers" do
+    p = WGPU.null(LibWGPU::PipelineLayout)
+    p.null?.should be_true
+
+    # Safe to call with null pointers
+    WGPU.release_pass(
+      WGPU.null(LibWGPU::CommandBuffer),
+      WGPU.null(LibWGPU::RenderPassEncoder),
+      WGPU.null(LibWGPU::CommandEncoder)
+    )
+    WGPU.release_surface(
+      WGPU.null(LibWGPU::TextureView),
+      WGPU.null(LibWGPU::Texture)
+    )
   end
 end
 

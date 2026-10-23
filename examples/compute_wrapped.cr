@@ -48,4 +48,14 @@ puts "Output : #{output.to_a.first(8).join(", ")}, …"
 ok = (0...n).all? { |i| (output[i] - input[i] * 2).abs < 1e-5 }
 puts ok ? "✅ GPU computation correct (each element × 2)" : "❌ Unexpected result"
 
+# --- Cleanup ---
+LibWGPU.bind_group_release(bind_group)
+LibWGPU.bind_group_layout_release(layout)
+LibWGPU.compute_pipeline_release(pipeline)
+LibWGPU.shader_module_release(shader)
+LibWGPU.buffer_release(storage)
+LibWGPU.device_release(device)
+LibWGPU.adapter_release(adapter)
+LibWGPU.instance_release(instance)
+
 exit(ok ? 0 : 1)

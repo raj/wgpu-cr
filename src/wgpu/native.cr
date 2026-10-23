@@ -6,9 +6,22 @@
 require "./link"
 
 lib LibWGPU
-  alias Bool = UInt32
+  alias CBool = UInt32
+  alias Bool = CBool # backward compatibility alias
   alias Flags = UInt64
   alias ProcFn = -> Void
+  # --- Constants ---
+  ARRAY_LAYER_COUNT_UNDEFINED = UInt32::MAX
+  COPY_STRIDE_UNDEFINED       = UInt32::MAX
+  DEPTH_CLEAR_VALUE_UNDEFINED = Float32::NAN
+  DEPTH_SLICE_UNDEFINED       = UInt32::MAX
+  LIMIT_U32_UNDEFINED         = UInt32::MAX
+  LIMIT_U64_UNDEFINED         = UInt64::MAX
+  MIP_LEVEL_COUNT_UNDEFINED   = UInt32::MAX
+  QUERY_SET_INDEX_UNDEFINED   = UInt32::MAX
+  STRLEN                      = LibC::SizeT::MAX
+  WHOLE_MAP_SIZE              = LibC::SizeT::MAX
+  WHOLE_SIZE                  = UInt64::MAX
 
   # --- Opaque handles ---
   type Adapter = Void*
@@ -836,7 +849,7 @@ lib LibWGPU
   struct BufferBindingLayout
     next_in_chain : Pointer(ChainedStruct)
     type_ : BufferBindingType
-    has_dynamic_offset : Bool
+    has_dynamic_offset : CBool
     min_binding_size : UInt64
   end
 
@@ -845,7 +858,7 @@ lib LibWGPU
     label : StringView
     usage : BufferUsage
     size : UInt64
-    mapped_at_creation : Bool
+    mapped_at_creation : CBool
   end
 
   struct Color
@@ -917,7 +930,7 @@ lib LibWGPU
     next_in_chain : Pointer(ChainedStruct)
     count : UInt32
     mask : UInt32
-    alpha_to_coverage_enabled : Bool
+    alpha_to_coverage_enabled : CBool
   end
 
   struct Origin3D
@@ -947,7 +960,7 @@ lib LibWGPU
     strip_index_format : IndexFormat
     front_face : FrontFace
     cull_mode : CullMode
-    unclipped_depth : Bool
+    unclipped_depth : CBool
   end
 
   struct QuerySetDescriptor
@@ -974,8 +987,8 @@ lib LibWGPU
     color_formats : Pointer(TextureFormat)
     depth_stencil_format : TextureFormat
     sample_count : UInt32
-    depth_read_only : Bool
-    stencil_read_only : Bool
+    depth_read_only : CBool
+    stencil_read_only : CBool
   end
 
   struct RenderPassDepthStencilAttachment
@@ -984,11 +997,11 @@ lib LibWGPU
     depth_load_op : LoadOp
     depth_store_op : StoreOp
     depth_clear_value : Float32
-    depth_read_only : Bool
+    depth_read_only : CBool
     stencil_load_op : LoadOp
     stencil_store_op : StoreOp
     stencil_clear_value : UInt32
-    stencil_read_only : Bool
+    stencil_read_only : CBool
   end
 
   struct RenderPassMaxDrawCount
@@ -998,7 +1011,7 @@ lib LibWGPU
 
   struct RequestAdapterWebXROptions
     chain : ChainedStruct
-    xr_compatible : Bool
+    xr_compatible : CBool
   end
 
   struct SamplerBindingLayout
@@ -1141,7 +1154,7 @@ lib LibWGPU
     next_in_chain : Pointer(ChainedStruct)
     sample_type : TextureSampleType
     view_dimension : TextureViewDimension
-    multisampled : Bool
+    multisampled : CBool
   end
 
   struct TextureBindingViewDimension
@@ -1225,7 +1238,7 @@ lib LibWGPU
 
   struct FutureWaitInfo
     future : Future
-    completed : Bool
+    completed : CBool
   end
 
   struct InstanceDescriptor
@@ -1285,7 +1298,7 @@ lib LibWGPU
     next_in_chain : Pointer(ChainedStruct)
     feature_level : FeatureLevel
     power_preference : PowerPreference
-    force_fallback_adapter : Bool
+    force_fallback_adapter : CBool
     backend_type : BackendType
     compatible_surface : Surface
   end
@@ -1436,12 +1449,12 @@ lib LibWGPU
   fun create_instance = wgpuCreateInstance(Pointer(InstanceDescriptor)) : Instance
   fun get_instance_features = wgpuGetInstanceFeatures(Pointer(SupportedInstanceFeatures)) : Void
   fun get_instance_limits = wgpuGetInstanceLimits(Pointer(InstanceLimits)) : Status
-  fun has_instance_feature = wgpuHasInstanceFeature(InstanceFeatureName) : Bool
+  fun has_instance_feature = wgpuHasInstanceFeature(InstanceFeatureName) : CBool
   fun get_proc_address = wgpuGetProcAddress(StringView) : ProcFn
   fun adapter_get_features = wgpuAdapterGetFeatures(Adapter, Pointer(SupportedFeatures)) : Void
   fun adapter_get_info = wgpuAdapterGetInfo(Adapter, Pointer(AdapterInfo)) : Status
   fun adapter_get_limits = wgpuAdapterGetLimits(Adapter, Pointer(Limits)) : Status
-  fun adapter_has_feature = wgpuAdapterHasFeature(Adapter, FeatureName) : Bool
+  fun adapter_has_feature = wgpuAdapterHasFeature(Adapter, FeatureName) : CBool
   fun adapter_request_device = wgpuAdapterRequestDevice(Adapter, Pointer(DeviceDescriptor), RequestDeviceCallbackInfo) : Future
   fun adapter_add_ref = wgpuAdapterAddRef(Adapter) : Void
   fun adapter_release = wgpuAdapterRelease(Adapter) : Void
@@ -1519,7 +1532,7 @@ lib LibWGPU
   fun device_get_limits = wgpuDeviceGetLimits(Device, Pointer(Limits)) : Status
   fun device_get_lost_future = wgpuDeviceGetLostFuture(Device) : Future
   fun device_get_queue = wgpuDeviceGetQueue(Device) : Queue
-  fun device_has_feature = wgpuDeviceHasFeature(Device, FeatureName) : Bool
+  fun device_has_feature = wgpuDeviceHasFeature(Device, FeatureName) : CBool
   fun device_pop_error_scope = wgpuDevicePopErrorScope(Device, PopErrorScopeCallbackInfo) : Future
   fun device_push_error_scope = wgpuDevicePushErrorScope(Device, ErrorFilter) : Void
   fun device_set_label = wgpuDeviceSetLabel(Device, StringView) : Void
@@ -1530,7 +1543,7 @@ lib LibWGPU
   fun external_texture_release = wgpuExternalTextureRelease(ExternalTexture) : Void
   fun instance_create_surface = wgpuInstanceCreateSurface(Instance, Pointer(SurfaceDescriptor)) : Surface
   fun instance_get_wgsl_language_features = wgpuInstanceGetWGSLLanguageFeatures(Instance, Pointer(SupportedWGSLLanguageFeatures)) : Void
-  fun instance_has_wgsl_language_feature = wgpuInstanceHasWGSLLanguageFeature(Instance, WGSLLanguageFeatureName) : Bool
+  fun instance_has_wgsl_language_feature = wgpuInstanceHasWGSLLanguageFeature(Instance, WGSLLanguageFeatureName) : CBool
   fun instance_process_events = wgpuInstanceProcessEvents(Instance) : Void
   fun instance_request_adapter = wgpuInstanceRequestAdapter(Instance, Pointer(RequestAdapterOptions), RequestAdapterCallbackInfo) : Future
   fun instance_wait_any = wgpuInstanceWaitAny(Instance, LibC::SizeT, Pointer(FutureWaitInfo), UInt64) : WaitStatus

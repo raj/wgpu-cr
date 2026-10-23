@@ -19,10 +19,10 @@ Like wgpu-py, the project exposes two levels:
 
 ✅ Working today:
 - Automatic download of wgpu-native (lib + headers + spec).
-- Full FFI binding generation: **199 functions, 92 structs, 54 enums, 5 bitflags, 23 handles, 10 callbacks**.
+- Full FFI binding generation: **199 functions, 92 structs, 54 enums, 5 bitflags, 23 handles, 10 callbacks, 11 constants**.
 - End-to-end **compute** (tested: a WGSL shader doubling an array on the GPU).
 - **Windowed rendering** — a triangle in a GLFW window via a Metal surface (macOS)
-  or a Wayland surface (Linux).
+  or a Wayland / X11 surface (Linux).
 - Adapter/device requests and buffer mapping (C ↔ Crystal callbacks).
 - Log forwarding: `wgpuSetLogCallback`/`wgpuSetLogLevel` (wgpu.h) + `WGPU.set_log_stderr(level)`.
 
