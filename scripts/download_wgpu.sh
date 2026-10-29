@@ -63,7 +63,7 @@ asset_name() {
 # ---------------------------------------------------------------------------
 # Default pinned version matching the committed FFI bindings in src/wgpu/native.cr.
 # Use './scripts/download_wgpu.sh latest' to explicitly query the latest upstream release.
-DEFAULT_VERSION="v29.0.0.0"
+DEFAULT_VERSION="v29.0.1.1"
 
 resolve_version() {
   local v="${1:-${WGPU_NATIVE_VERSION:-${DEFAULT_VERSION}}}"
