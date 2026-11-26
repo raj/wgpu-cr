@@ -7,7 +7,9 @@
 #   scripts/download_wgpu.sh [version]
 #
 # Environment variables:
-#   WGPU_NATIVE_VERSION   version to install (e.g. v29.0.0.0). Default: latest release.
+#   WGPU_NATIVE_VERSION   version to install (e.g. v29.0.1.1), or "latest" for the newest
+#                         upstream release. Default: DEFAULT_VERSION below, the version
+#                         the committed bindings (src/wgpu/native.cr) were generated from.
 #   WGPU_NATIVE_BUILD     "release" (default) or "debug".
 #   WGPU_NATIVE_OS        force OS  : macos | linux | windows.
 #   WGPU_NATIVE_ARCH      force arch: aarch64 | x86_64 | i686.

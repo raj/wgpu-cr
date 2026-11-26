@@ -63,7 +63,7 @@ shards install            # triggers the postinstall (download_wgpu.sh)
 Or manually:
 
 ```sh
-./scripts/download_wgpu.sh            # latest wgpu-native release
+./scripts/download_wgpu.sh            # the wgpu-native version the bindings target
 crystal run scripts/generate_bindings.cr
 ```
 
@@ -74,8 +74,9 @@ The script detects the OS/architecture, fetches the right release and installs
 into `src/wgpu/link.cr`.
 
 ```sh
-./scripts/download_wgpu.sh                 # latest version
-./scripts/download_wgpu.sh v29.0.0.0       # pinned version
+./scripts/download_wgpu.sh                 # pinned version (matches src/wgpu/native.cr)
+./scripts/download_wgpu.sh v29.0.1.1       # a given version
+./scripts/download_wgpu.sh latest          # newest upstream release (regenerate the bindings!)
 WGPU_NATIVE_BUILD=debug ./scripts/download_wgpu.sh
 ```
 
@@ -162,7 +163,7 @@ crystal run examples/compute.cr
 ```
 
 ```
-wgpu-cr 0.1.0 (wgpu-native v29.0.0.0)
+wgpu-cr 0.1.0 (wgpu-native v29.0.1.1)
 Input  : 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, … (256 elements)
 Output : 0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, …
 ✅ GPU computation correct (each element × 2)

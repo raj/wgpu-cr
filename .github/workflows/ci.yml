@@ -26,7 +26,10 @@ jobs:
       # against. Pin the same wgpu-native version the committed bindings + ABI specs
       # target, so a newer upstream release can't silently shift struct sizes.
       - name: Fetch wgpu-native (pinned) and generate link flags
-        run: ./scripts/download_wgpu.sh v29.0.0.0
+        # No version argument: the script installs its DEFAULT_VERSION, the one the
+        # committed bindings (src/wgpu/native.cr) were generated from. Single source
+        # of truth, so the CI pin cannot drift from the bindings again.
+        run: ./scripts/download_wgpu.sh
 
       - name: Run specs
         run: crystal spec

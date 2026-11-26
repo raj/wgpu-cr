@@ -35,12 +35,15 @@ jobs:
           kcov --version
 
       - name: Fetch wgpu-native (pinned) and generate link flags
-        run: ./scripts/download_wgpu.sh v29.0.0.0
+        # No version argument: the script installs its DEFAULT_VERSION, the one the
+        # committed bindings (src/wgpu/native.cr) were generated from. Single source
+        # of truth, so the CI pin cannot drift from the bindings again.
+        run: ./scripts/download_wgpu.sh
 
       - name: Build the spec binary (debug info for kcov)
         run: |
           mkdir -p bin
-          crystal build spec/wgpu_spec.cr -o bin/spec_runner
+          crystal build spec/*_spec.cr -o bin/spec_runner
 
       # Measure only src/, and exclude the generated FFI (native.cr) + machine link
       # flags (link.cr) so the number reflects the hand-written API, not thousands of
