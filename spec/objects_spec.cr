@@ -514,6 +514,107 @@ describe "WGPU object layer" do
       end
     end
   end
+
+  describe "error handling" do
+    it "raises WGPU::ValidationError at creation, with wgpu's message" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+
+        expect_raises(WGPU::ValidationError, /expected/) { device.create_shader_module("fn main( {") }
+        expect_raises(WGPU::ValidationError, /MAP/) { device.create_buffer(16, LibWGPU::BufferUsage::MapRead | LibWGPU::BufferUsage::Storage) }
+
+        layout = device.create_bind_group_layout([WGPU::LayoutEntry.buffer(0, LibWGPU::ShaderStage::Compute)])
+        storage = device.create_buffer(512, LibWGPU::BufferUsage::Storage)
+        expect_raises(WGPU::ValidationError, /min_storage_buffer_offset_alignment/) do
+          device.create_bind_group(layout, {0 => WGPU::BufferBinding.new(storage, 32_u64, 32_u64)})
+        end
+
+        # The device is still healthy afterwards.
+        device.create_buffer(16, USAGE_RW).released?.should be_false
+        device.release
+      end
+    end
+
+    it "raises encoding errors at finish instead of aborting at submit" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        buffer = device.create_buffer(64, USAGE_RW)
+        encoder = device.create_command_encoder
+        encoder.copy_buffer_to_buffer(buffer, 0, buffer, 0, 64)
+        expect_raises(WGPU::ValidationError, /same buffer/) { encoder.finish }
+        device.release
+      end
+    end
+
+    it "raises on invalid queue writes" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        no_copy_dst = device.create_buffer(16, LibWGPU::BufferUsage::Storage)
+        expect_raises(WGPU::ValidationError) { device.queue.write_buffer(no_copy_dst, Bytes.new(16)) }
+        device.release
+      end
+    end
+
+    it "refuses to submit commands using a mapped or destroyed buffer" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        upload = device.create_buffer(16, LibWGPU::BufferUsage::MapWrite | LibWGPU::BufferUsage::CopySrc, mapped_at_creation: true)
+        target = device.create_buffer(16, USAGE_RW)
+
+        encoder = device.create_command_encoder
+        encoder.copy_buffer_to_buffer(upload, 0, target, 0, 16)
+        cmd = encoder.finish
+        expect_raises(WGPU::ValidationError, /still mapped/) { device.queue.submit(cmd) }
+        cmd.released?.should be_true # consumed even when refused
+
+        upload.unmap
+        encoder = device.create_command_encoder
+        encoder.copy_buffer_to_buffer(upload, 0, target, 0, 16)
+        device.queue.submit(encoder.finish) # fine once unmapped
+
+        target.destroy
+        expect_raises(WGPU::ValidationError, /destroyed/) { device.read_buffer(target) }
+        device.release
+      end
+    end
+
+    it "makes the static WGPU.dispatch raise instead of aborting" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        pipeline = device.create_compute_pipeline(device.create_shader_module(DOUBLE_WGSL))
+        # A valid bind group, but for a layout the pipeline does not use.
+        other_layout = device.create_bind_group_layout([WGPU::LayoutEntry.buffer(0, LibWGPU::ShaderStage::Compute, LibWGPU::BufferBindingType::Uniform)])
+        uniform = device.create_buffer(16, LibWGPU::BufferUsage::Uniform)
+        bind_group = device.create_bind_group(other_layout, {0 => uniform})
+
+        expect_raises(WGPU::ValidationError) do
+          WGPU.dispatch(device.to_unsafe, pipeline.to_unsafe, bind_group.to_unsafe, 1_u32)
+        end
+        device.release
+      end
+    end
+
+    it "exposes error scopes and lets error checks be turned off" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        bad_usage = LibWGPU::BufferUsage::MapRead | LibWGPU::BufferUsage::Storage
+
+        expect_raises(WGPU::ValidationError) { device.error_scope { device.create_buffer(16, bad_usage) } }
+
+        device.error_checks = false
+        device.queue.error_checks?.should be_false
+        device.push_error_scope
+        buffer = device.create_buffer(16, bad_usage) # no raise: checks are off
+        error = device.pop_error_scope
+        error.should be_a(WGPU::ValidationError)
+        buffer.release
+
+        device.error_checks = true
+        device.queue.error_checks?.should be_true
+        device.release
+      end
+    end
+  end
 end
 
 private RT_FORMAT = LibWGPU::TextureFormat::RGBA8Unorm

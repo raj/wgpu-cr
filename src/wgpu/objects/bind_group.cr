@@ -5,9 +5,12 @@ module WGPU
   # the buffers, views and samplers may be released before the bind group.
   class BindGroup < GPUObject(LibWGPU::BindGroup)
     getter device : Device
+    # Buffers bound by this group (checked by `Queue#submit`, see `CommandEncoder`).
+    getter buffers : Array(Buffer)
 
     # Wraps `handle`, taking ownership of one reference.
-    def initialize(@device : Device, handle : LibWGPU::BindGroup, label : String? = nil)
+    def initialize(@device : Device, handle : LibWGPU::BindGroup, label : String? = nil,
+                   @buffers : Array(Buffer) = [] of Buffer)
       super(handle, label)
     end
 
@@ -17,6 +20,19 @@ module WGPU
   end
 
   module Internal
+    # The buffer behind a bind group resource, if any.
+    def bound_buffer(resource : Buffer) : Buffer?
+      resource
+    end
+
+    def bound_buffer(resource : BufferBinding) : Buffer?
+      resource.buffer
+    end
+
+    def bound_buffer(resource : Sampler | TextureView) : Buffer?
+      nil
+    end
+
     # One `WGPUBindGroupEntry` per kind of bindable resource. Overloads, so a
     # Hash whose values are a union dispatches per entry at runtime, and an
     # unsupported resource type is a compile-time error.

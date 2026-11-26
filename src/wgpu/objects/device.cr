@@ -5,6 +5,14 @@ module WGPU
     getter adapter : Adapter
     @queue : Queue? = nil
 
+    # When true (the default), the `create_*` factories and the `finish` of
+    # encoders run inside error scopes and raise `WGPU::ValidationError` (or
+    # `OutOfMemoryError`, `InternalError`) with wgpu's message, instead of
+    # returning an invalid object that makes a later `Queue#submit` abort the
+    # process. Costs one event-loop round trip per checked call: turn it off
+    # in a hot loop once the code is known to be correct.
+    getter? error_checks : Bool = true
+
     # Wraps `handle`, taking ownership of one reference.
     def initialize(@adapter : Adapter, handle : LibWGPU::Device)
       super(handle)
@@ -52,6 +60,43 @@ module WGPU
     end
 
     # ------------------------------------------------------------------
+    # Error scopes
+    # ------------------------------------------------------------------
+
+    # Starts capturing errors of `filter` type (scopes nest).
+    def push_error_scope(filter : LibWGPU::ErrorFilter = LibWGPU::ErrorFilter::Validation) : Nil
+      LibWGPU.device_push_error_scope(handle, filter)
+    end
+
+    # Ends the innermost scope. Returns the first error captured by it (as an
+    # exception, not raised), or nil.
+    def pop_error_scope : Error?
+      Internal.pop_error_scope(handle, instance.to_unsafe)
+    end
+
+    # Runs the block inside an error scope and raises the error it captured,
+    # if any (an invalid object the block returned is released first).
+    # Returns the block's value. If the block raises, the captured GPU error
+    # (wgpu's real cause, e.g. behind a NULL handle) wins over its exception.
+    #
+    #   device.error_scope { LibWGPU.device_create_buffer(device, pointerof(desc)) }
+    def error_scope(filter : LibWGPU::ErrorFilter = LibWGPU::ErrorFilter::Validation, &)
+      Internal.error_scope(handle, filter) { yield }
+    end
+
+    def error_checks=(enabled : Bool) : Bool
+      @queue.try &.error_checks = enabled
+      @error_checks = enabled
+    end
+
+    # Runs a factory/finish inside Validation + OutOfMemory scopes when
+    # `error_checks?` is on (see there).
+    protected def checked(&)
+      return yield unless @error_checks
+      Internal.checked(handle) { yield }
+    end
+
+    # ------------------------------------------------------------------
     # Resource creation
     # ------------------------------------------------------------------
 
@@ -60,8 +105,10 @@ module WGPU
     #   device.create_buffer(1024, LibWGPU::BufferUsage::Storage | LibWGPU::BufferUsage::CopySrc)
     def create_buffer(size : Int, usage : LibWGPU::BufferUsage,
                       label : String? = nil, mapped_at_creation : Bool = false) : Buffer
-      raw = WGPU.create_buffer(handle, size.to_u64, usage, label, mapped_at_creation)
-      Buffer.new(self, raw, label, mapped: mapped_at_creation)
+      checked do
+        raw = WGPU.create_buffer(handle, size.to_u64, usage, label, mapped_at_creation)
+        Buffer.new(self, raw, label, mapped: mapped_at_creation)
+      end
     end
 
     # Yields a new buffer and releases it when the block exits.
@@ -72,7 +119,7 @@ module WGPU
 
     # Compiles a WGSL source into a shader module.
     def create_shader_module(wgsl : String, label : String? = nil) : ShaderModule
-      ShaderModule.new(self, WGPU.create_shader_module(handle, wgsl, label), label)
+      checked { ShaderModule.new(self, WGPU.create_shader_module(handle, wgsl, label), label) }
     end
 
     # Yields a new shader module and releases it when the block exits.
@@ -112,7 +159,7 @@ module WGPU
         desc.view_format_count = LibC::SizeT.new(formats.size)
         desc.view_formats = formats.to_unsafe
       end
-      Texture.new(self, LibWGPU.device_create_texture(handle, pointerof(desc)), label)
+      checked { Texture.new(self, LibWGPU.device_create_texture(handle, pointerof(desc)), label) }
     end
 
     # Creates a sampler. The defaults are WebGPU's: clamp to edge, nearest
@@ -133,7 +180,7 @@ module WGPU
         lod_min_clamp: lod_min_clamp, lod_max_clamp: lod_max_clamp,
         compare: compare, max_anisotropy: max_anisotropy.to_u16,
       )
-      Sampler.new(self, LibWGPU.device_create_sampler(handle, pointerof(desc)), label)
+      checked { Sampler.new(self, LibWGPU.device_create_sampler(handle, pointerof(desc)), label) }
     end
 
     # Creates a bind group layout from entries built with `WGPU::LayoutEntry`.
@@ -144,7 +191,7 @@ module WGPU
         entry_count: LibC::SizeT.new(list.size),
         entries: list.to_unsafe,
       )
-      BindGroupLayout.new(self, LibWGPU.device_create_bind_group_layout(handle, pointerof(desc)), label)
+      checked { BindGroupLayout.new(self, LibWGPU.device_create_bind_group_layout(handle, pointerof(desc)), label) }
     end
 
     # Creates a pipeline layout: bind group layout `i` is used for group `i`.
@@ -155,7 +202,7 @@ module WGPU
         bind_group_layout_count: LibC::SizeT.new(handles.size),
         bind_group_layouts: handles.to_unsafe,
       )
-      PipelineLayout.new(self, LibWGPU.device_create_pipeline_layout(handle, pointerof(desc)), label)
+      checked { PipelineLayout.new(self, LibWGPU.device_create_pipeline_layout(handle, pointerof(desc)), label) }
     end
 
     # Binds resources to `layout`, keyed by binding number. A value is a
@@ -171,7 +218,8 @@ module WGPU
         entry_count: LibC::SizeT.new(list.size),
         entries: list.to_unsafe,
       )
-      BindGroup.new(self, LibWGPU.device_create_bind_group(handle, pointerof(desc)), label)
+      buffers = entries.values.compact_map { |resource| Internal.bound_buffer(resource) }
+      checked { BindGroup.new(self, LibWGPU.device_create_bind_group(handle, pointerof(desc)), label, buffers) }
     end
 
     # Creates a compute pipeline running `entry_point` of `shader`. Without
@@ -180,8 +228,10 @@ module WGPU
     def create_compute_pipeline(shader : ShaderModule, entry_point : String = "main",
                                 layout : PipelineLayout? = nil, label : String? = nil) : ComputePipeline
       raw_layout = layout ? layout.to_unsafe : Internal.null(LibWGPU::PipelineLayout)
-      raw = WGPU.create_compute_pipeline(handle, shader.to_unsafe, entry_point, raw_layout, label)
-      ComputePipeline.new(self, raw, label)
+      checked do
+        raw = WGPU.create_compute_pipeline(handle, shader.to_unsafe, entry_point, raw_layout, label)
+        ComputePipeline.new(self, raw, label)
+      end
     end
 
     def create_command_encoder(label : String? = nil) : CommandEncoder
@@ -196,6 +246,7 @@ module WGPU
     # Records and submits one compute pass: `pipeline` with `bind_group` at
     # group 0, `x × y × z` workgroups. Does not wait: `read_buffer` does.
     def dispatch(pipeline : ComputePipeline, bind_group : BindGroup, x : Int, y : Int = 1, z : Int = 1) : Nil
+      Internal.check_submittable(bind_group.buffers, "Device#dispatch")
       WGPU.dispatch(handle, pipeline.to_unsafe, bind_group.to_unsafe, x.to_u32, y.to_u32, z.to_u32)
     end
 

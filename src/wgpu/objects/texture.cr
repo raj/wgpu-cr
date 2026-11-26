@@ -66,7 +66,7 @@ module WGPU
         aspect: aspect,
         usage: usage,
       )
-      TextureView.new(self, LibWGPU.texture_create_view(handle, pointerof(desc)), label)
+      @device.checked { TextureView.new(self, LibWGPU.texture_create_view(handle, pointerof(desc)), label) }
     end
 
     # Frees the GPU memory now. The wrapper still has to be released.

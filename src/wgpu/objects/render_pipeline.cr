@@ -75,7 +75,7 @@ module WGPU
     # Layout of bind group `group`. With an auto layout (no `layout:` at
     # creation) this is the layout wgpu derived from the shaders.
     def bind_group_layout(group : Int = 0) : BindGroupLayout
-      BindGroupLayout.new(@device, LibWGPU.render_pipeline_get_bind_group_layout(handle, group.to_u32))
+      @device.checked { BindGroupLayout.new(@device, LibWGPU.render_pipeline_get_bind_group_layout(handle, group.to_u32)) }
     end
 
     private def release_handle : Nil
@@ -152,7 +152,7 @@ module WGPU
         desc.fragment = pointerof(fragment_c)
       end
 
-      RenderPipeline.new(self, LibWGPU.device_create_render_pipeline(handle, pointerof(desc)), label)
+      checked { RenderPipeline.new(self, LibWGPU.device_create_render_pipeline(handle, pointerof(desc)), label) }
     end
 
     # Creates an encoder recording a `RenderBundle` for render passes whose
@@ -170,7 +170,7 @@ module WGPU
         depth_read_only: depth_read_only ? 1_u32 : 0_u32,
         stencil_read_only: stencil_read_only ? 1_u32 : 0_u32,
       )
-      RenderBundleEncoder.new(self, LibWGPU.device_create_render_bundle_encoder(handle, pointerof(desc)), label)
+      checked { RenderBundleEncoder.new(self, LibWGPU.device_create_render_bundle_encoder(handle, pointerof(desc)), label) }
     end
   end
 

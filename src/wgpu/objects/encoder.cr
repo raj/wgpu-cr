@@ -10,6 +10,20 @@ module WGPU
   class CommandEncoder < GPUObject(LibWGPU::CommandEncoder)
     getter device : Device
 
+    # Buffers used by the recorded commands, handed to the `CommandBuffer` so
+    # `Queue#submit` can refuse a mapped/destroyed one (wgpu-native would abort).
+    @used_buffers = [] of Buffer
+
+    # Records that the commands use `buffer` (called by the passes too).
+    protected def track(buffer : Buffer) : Nil
+      @used_buffers << buffer
+    end
+
+    # :ditto:
+    protected def track(buffers : Array(Buffer)) : Nil
+      @used_buffers.concat(buffers)
+    end
+
     # Wraps `handle`, taking ownership of one reference.
     def initialize(@device : Device, handle : LibWGPU::CommandEncoder, label : String? = nil)
       super(handle, label)
@@ -19,12 +33,15 @@ module WGPU
     # (`CopyDst` usage). Offsets and size must be multiples of 4.
     def copy_buffer_to_buffer(source : Buffer, source_offset : Int, destination : Buffer,
                               destination_offset : Int, size : Int) : Nil
+      track(source)
+      track(destination)
       LibWGPU.command_encoder_copy_buffer_to_buffer(handle, source, source_offset.to_u64,
         destination, destination_offset.to_u64, size.to_u64)
     end
 
     # Fills `size` bytes of `buffer` at `offset` with zeros (whole buffer by default).
     def clear_buffer(buffer : Buffer, offset : Int = 0, size : Int = LibWGPU::WHOLE_SIZE) : Nil
+      track(buffer)
       LibWGPU.command_encoder_clear_buffer(handle, buffer, offset.to_u64, size.to_u64)
     end
 
@@ -37,6 +54,7 @@ module WGPU
                                rows_per_image : Int = height, buffer_offset : Int = 0,
                                mip_level : Int = 0, origin : {Int, Int, Int} = {0, 0, 0},
                                aspect : LibWGPU::TextureAspect = LibWGPU::TextureAspect::All) : Nil
+      track(buffer)
       src = Internal.texel_copy_buffer(buffer, buffer_offset, bytes_per_row, rows_per_image)
       dst = Internal.texel_copy_texture(texture, mip_level, origin, aspect)
       extent = Internal.extent(width, height, depth_or_array_layers)
@@ -51,6 +69,7 @@ module WGPU
                                rows_per_image : Int = height, buffer_offset : Int = 0,
                                mip_level : Int = 0, origin : {Int, Int, Int} = {0, 0, 0},
                                aspect : LibWGPU::TextureAspect = LibWGPU::TextureAspect::All) : Nil
+      track(buffer)
       src = Internal.texel_copy_texture(texture, mip_level, origin, aspect)
       dst = Internal.texel_copy_buffer(buffer, buffer_offset, bytes_per_row, rows_per_image)
       extent = Internal.extent(width, height, depth_or_array_layers)
@@ -61,9 +80,12 @@ module WGPU
     # consumed: it is released here, and any further use raises `WGPU::Error`.
     def finish(label : String? = nil) : CommandBuffer
       desc = LibWGPU::CommandBufferDescriptor.new(label: Internal.label_view(label))
-      raw = LibWGPU.command_encoder_finish(handle, pointerof(desc))
-      release
-      CommandBuffer.new(@device, raw, label)
+      # Encoding errors (bad pass commands, copies…) are reported here.
+      @device.checked do
+        raw = LibWGPU.command_encoder_finish(handle, pointerof(desc))
+        release
+        CommandBuffer.new(@device, raw, label, @used_buffers)
+      end
     end
 
     private def release_handle : Nil
@@ -75,9 +97,12 @@ module WGPU
   # `Queue#submit`.
   class CommandBuffer < GPUObject(LibWGPU::CommandBuffer)
     getter device : Device
+    # Buffers used by the recorded commands (see `CommandEncoder`).
+    getter used_buffers : Array(Buffer)
 
     # Wraps `handle`, taking ownership of one reference.
-    def initialize(@device : Device, handle : LibWGPU::CommandBuffer, label : String? = nil)
+    def initialize(@device : Device, handle : LibWGPU::CommandBuffer, label : String? = nil,
+                   @used_buffers : Array(Buffer) = [] of Buffer)
       super(handle, label)
     end
 

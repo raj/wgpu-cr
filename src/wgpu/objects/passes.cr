@@ -4,6 +4,7 @@
 private macro wgpu_common_pass_commands(prefix)
   # Binds `bind_group` at group `index`, with optional dynamic offsets.
   def set_bind_group(index : Int, bind_group : BindGroup, dynamic_offsets : Array(UInt32)? = nil) : Nil
+    track(bind_group.buffers)
     count = dynamic_offsets ? dynamic_offsets.size : 0
     offsets = dynamic_offsets ? dynamic_offsets.to_unsafe : Pointer(UInt32).null
     LibWGPU.{{prefix.id}}_set_bind_group(handle, index.to_u32, bind_group, LibC::SizeT.new(count), offsets)
@@ -31,11 +32,13 @@ private macro wgpu_render_commands(prefix)
 
   # Binds `buffer` (`Vertex` usage) to vertex buffer `slot`.
   def set_vertex_buffer(slot : Int, buffer : Buffer, offset : Int = 0, size : Int = LibWGPU::WHOLE_SIZE) : Nil
+    track(buffer)
     LibWGPU.{{prefix.id}}_set_vertex_buffer(handle, slot.to_u32, buffer, offset.to_u64, size.to_u64)
   end
 
   # Binds `buffer` (`Index` usage) as the index buffer.
   def set_index_buffer(buffer : Buffer, format : LibWGPU::IndexFormat, offset : Int = 0, size : Int = LibWGPU::WHOLE_SIZE) : Nil
+    track(buffer)
     LibWGPU.{{prefix.id}}_set_index_buffer(handle, buffer, format, offset.to_u64, size.to_u64)
   end
 
@@ -51,10 +54,12 @@ private macro wgpu_render_commands(prefix)
 
   # Draws with arguments read from `buffer` (`Indirect` usage) at `offset`.
   def draw_indirect(buffer : Buffer, offset : Int = 0) : Nil
+    track(buffer)
     LibWGPU.{{prefix.id}}_draw_indirect(handle, buffer, offset.to_u64)
   end
 
   def draw_indexed_indirect(buffer : Buffer, offset : Int = 0) : Nil
+    track(buffer)
     LibWGPU.{{prefix.id}}_draw_indexed_indirect(handle, buffer, offset.to_u64)
   end
 end
@@ -93,6 +98,11 @@ module WGPU
       super(handle, label)
     end
 
+    # Records buffer use on the parent encoder (see `CommandEncoder#track`).
+    private def track(buffers : Buffer | Array(Buffer)) : Nil
+      @encoder.track(buffers)
+    end
+
     wgpu_common_pass_commands(compute_pass_encoder)
 
     def set_pipeline(pipeline : ComputePipeline) : Nil
@@ -105,6 +115,7 @@ module WGPU
 
     # Dispatches with workgroup counts read from `buffer` (`Indirect` usage).
     def dispatch_workgroups_indirect(buffer : Buffer, offset : Int = 0) : Nil
+      track(buffer)
       LibWGPU.compute_pass_encoder_dispatch_workgroups_indirect(handle, buffer, offset.to_u64)
     end
 
@@ -127,6 +138,11 @@ module WGPU
     # Wraps `handle`, taking ownership of one reference.
     def initialize(@encoder : CommandEncoder, handle : LibWGPU::RenderPassEncoder, label : String? = nil)
       super(handle, label)
+    end
+
+    # Records buffer use on the parent encoder (see `CommandEncoder#track`).
+    private def track(buffers : Buffer | Array(Buffer)) : Nil
+      @encoder.track(buffers)
     end
 
     wgpu_common_pass_commands(render_pass_encoder)
@@ -154,7 +170,9 @@ module WGPU
 
     # Replays pre-recorded render bundles.
     def execute_bundles(bundles : Enumerable(RenderBundle)) : Nil
-      raw = bundles.to_a.map(&.to_unsafe)
+      list = bundles.to_a
+      list.each { |bundle| track(bundle.used_buffers) }
+      raw = list.map(&.to_unsafe)
       LibWGPU.render_pass_encoder_execute_bundles(handle, LibC::SizeT.new(raw.size), raw.to_unsafe)
     end
 
@@ -184,15 +202,27 @@ module WGPU
       super(handle, label)
     end
 
+    @used_buffers = [] of Buffer
+
+    private def track(buffer : Buffer) : Nil
+      @used_buffers << buffer
+    end
+
+    private def track(buffers : Array(Buffer)) : Nil
+      @used_buffers.concat(buffers)
+    end
+
     wgpu_common_pass_commands(render_bundle_encoder)
     wgpu_render_commands(render_bundle_encoder)
 
     # Ends the recording. The bundle encoder is consumed (released here).
     def finish(label : String? = nil) : RenderBundle
       desc = LibWGPU::RenderBundleDescriptor.new(label: Internal.label_view(label))
-      raw = LibWGPU.render_bundle_encoder_finish(handle, pointerof(desc))
-      release
-      RenderBundle.new(@device, raw, label)
+      @device.checked do
+        raw = LibWGPU.render_bundle_encoder_finish(handle, pointerof(desc))
+        release
+        RenderBundle.new(@device, raw, label, @used_buffers)
+      end
     end
 
     private def release_handle : Nil
@@ -203,9 +233,12 @@ module WGPU
   # Pre-recorded draw commands, from `RenderBundleEncoder#finish`.
   class RenderBundle < GPUObject(LibWGPU::RenderBundle)
     getter device : Device
+    # Buffers used by the recorded commands (see `CommandEncoder`).
+    getter used_buffers : Array(Buffer)
 
     # Wraps `handle`, taking ownership of one reference.
-    def initialize(@device : Device, handle : LibWGPU::RenderBundle, label : String? = nil)
+    def initialize(@device : Device, handle : LibWGPU::RenderBundle, label : String? = nil,
+                   @used_buffers : Array(Buffer) = [] of Buffer)
       super(handle, label)
     end
 

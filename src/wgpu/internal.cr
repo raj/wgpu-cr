@@ -96,6 +96,92 @@ module WGPU
     end
 
     # ------------------------------------------------------------------
+    # Error scopes — synchronous.
+    # ------------------------------------------------------------------
+
+    private struct PopErrorScopeResult
+      property status : LibWGPU::PopErrorScopeStatus = LibWGPU::PopErrorScopeStatus::Error
+      property type : LibWGPU::ErrorType = LibWGPU::ErrorType::NoError
+      property message : String = ""
+      property done : Bool = false
+    end
+
+    # Pops the device's innermost error scope. Returns the captured error as
+    # an exception (not raised), or nil.
+    #
+    # Uses `AllowSpontaneous`: wgpu-native v29 fires this callback
+    # synchronously, inside `wgpuDevicePopErrorScope` (verified), so no event
+    # pumping (and no instance) is needed. If it ever does not, `instance` is
+    # pumped when given; without one, a `WGPU::Error` is raised.
+    def pop_error_scope(device : LibWGPU::Device, instance : LibWGPU::Instance? = nil,
+                        timeout : Time::Span = 5.seconds) : WGPU::Error?
+      # Heap box: see `map_buffer` / `wait_until`.
+      result = Pointer(PopErrorScopeResult).malloc(1)
+      result.value = PopErrorScopeResult.new
+
+      callback = ->(status : LibWGPU::PopErrorScopeStatus, type : LibWGPU::ErrorType, message : LibWGPU::StringView, u1 : Void*, _u2 : Void*) do
+        r = u1.as(Pointer(PopErrorScopeResult))
+        r.value.status = status
+        r.value.type = type
+        r.value.message = Internal.view_to_s(message)
+        r.value.done = true
+        nil
+      end
+
+      info = LibWGPU::PopErrorScopeCallbackInfo.new(
+        mode: LibWGPU::CallbackMode::AllowSpontaneous,
+        callback: callback,
+        userdata1: result.as(Void*),
+      )
+      LibWGPU.device_pop_error_scope(device, info)
+      unless result.value.done
+        raise WGPU::Error.new("pop_error_scope did not complete synchronously") unless instance
+        wait_until(instance, result.as(Void*), timeout) { result.value.done }
+      end
+
+      unless result.value.status.success?
+        raise WGPU::Error.new("pop_error_scope failed: #{result.value.status} #{result.value.message}")
+      end
+      gpu_error(result.value.type, result.value.message)
+    end
+
+    # Runs the block inside an error scope of `device` and raises the error
+    # it captured, if any (releasing a `GPUObject` the block returned, which
+    # is invalid then). Returns the block's value. If the block itself
+    # raises, the captured GPU error (wgpu's real cause) wins.
+    def error_scope(device : LibWGPU::Device, filter : LibWGPU::ErrorFilter, &)
+      LibWGPU.device_push_error_scope(device, filter)
+      begin
+        result = yield
+      rescue ex
+        raise pop_error_scope(device) || ex
+      end
+      if error = pop_error_scope(device)
+        result.release if result.is_a?(GPUObject)
+        raise error
+      end
+      result
+    end
+
+    # `error_scope` for Validation and OutOfMemory errors at once.
+    def checked(device : LibWGPU::Device, &)
+      error_scope(device, LibWGPU::ErrorFilter::OutOfMemory) do
+        error_scope(device, LibWGPU::ErrorFilter::Validation) { yield }
+      end
+    end
+
+    # The exception matching a wgpu error type (nil for NoError).
+    def gpu_error(type : LibWGPU::ErrorType, message : String) : WGPU::Error?
+      case type
+      when .no_error?      then nil
+      when .validation?    then WGPU::ValidationError.new(message)
+      when .out_of_memory? then WGPU::OutOfMemoryError.new(message)
+      when .internal?      then WGPU::InternalError.new(message)
+      else                      WGPU::Error.new("#{type}: #{message}")
+      end
+    end
+
+    # ------------------------------------------------------------------
     # Synchronous wait over asynchronous callbacks
     # ------------------------------------------------------------------
 

@@ -90,7 +90,7 @@ module WGPU
     # Layout of bind group `group`. With an auto layout (no `layout:` at
     # creation) this is the layout wgpu derived from the shader.
     def bind_group_layout(group : Int = 0) : BindGroupLayout
-      BindGroupLayout.new(@device, WGPU.compute_bind_group_layout(handle, group.to_u32))
+      @device.checked { BindGroupLayout.new(@device, WGPU.compute_bind_group_layout(handle, group.to_u32)) }
     end
 
     private def release_handle : Nil

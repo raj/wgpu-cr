@@ -23,6 +23,19 @@ module WGPU
   class Error < Exception
   end
 
+  # A WebGPU validation error (invalid descriptor, WGSL compile error, wrong
+  # usage flags…), raised by the object layer with wgpu's message.
+  class ValidationError < Error
+  end
+
+  # wgpu could not allocate GPU memory for the operation.
+  class OutOfMemoryError < Error
+  end
+
+  # An internal error of wgpu or of the driver.
+  class InternalError < Error
+  end
+
   Log = ::Log.for("wgpu")
 
   # Non-capturing callback (a valid C function pointer) forwarding wgpu-native's log
@@ -543,22 +556,27 @@ module WGPU
     pass = WGPU.null(LibWGPU::ComputePassEncoder)
     cmd = WGPU.null(LibWGPU::CommandBuffer)
     begin
-      enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
-      encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
-      raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
+      # Check the encoding before submitting: wgpu-native aborts the process
+      # when an invalid command buffer is submitted. Raises WGPU::ValidationError
+      # instead (handles are assigned inside so `ensure` releases them anyway).
+      Internal.checked(device) do
+        enc_desc = LibWGPU::CommandEncoderDescriptor.new(label: empty_string_view)
+        encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
+        raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
 
-      pass_desc = LibWGPU::ComputePassDescriptor.new(label: empty_string_view)
-      pass = LibWGPU.command_encoder_begin_compute_pass(encoder, pointerof(pass_desc))
-      raise Error.new("command_encoder_begin_compute_pass returned NULL") if pass.null?
+        pass_desc = LibWGPU::ComputePassDescriptor.new(label: empty_string_view)
+        pass = LibWGPU.command_encoder_begin_compute_pass(encoder, pointerof(pass_desc))
+        raise Error.new("command_encoder_begin_compute_pass returned NULL") if pass.null?
 
-      LibWGPU.compute_pass_encoder_set_pipeline(pass, pipeline)
-      LibWGPU.compute_pass_encoder_set_bind_group(pass, 0_u32, bind_group, LibC::SizeT.new(0), Pointer(UInt32).null)
-      LibWGPU.compute_pass_encoder_dispatch_workgroups(pass, workgroups_x, workgroups_y, workgroups_z)
-      LibWGPU.compute_pass_encoder_end(pass)
+        LibWGPU.compute_pass_encoder_set_pipeline(pass, pipeline)
+        LibWGPU.compute_pass_encoder_set_bind_group(pass, 0_u32, bind_group, LibC::SizeT.new(0), Pointer(UInt32).null)
+        LibWGPU.compute_pass_encoder_dispatch_workgroups(pass, workgroups_x, workgroups_y, workgroups_z)
+        LibWGPU.compute_pass_encoder_end(pass)
 
-      cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
-      cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
-      raise Error.new("command_encoder_finish returned NULL") if cmd.null?
+        cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+        cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+        raise Error.new("command_encoder_finish returned NULL") if cmd.null?
+      end
 
       LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))
     ensure
@@ -590,9 +608,18 @@ module WGPU
         encoder = LibWGPU.device_create_command_encoder(device, pointerof(enc_desc))
         raise Error.new("device_create_command_encoder returned NULL") if encoder.null?
         begin
-          LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
-          cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
-          cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+          # Check the copy before submitting (see `dispatch`).
+          cmd = WGPU.null(LibWGPU::CommandBuffer)
+          begin
+            Internal.checked(device) do
+              LibWGPU.command_encoder_copy_buffer_to_buffer(encoder, source, 0_u64, staging, 0_u64, size)
+              cmd_desc = LibWGPU::CommandBufferDescriptor.new(label: empty_string_view)
+              cmd = LibWGPU.command_encoder_finish(encoder, pointerof(cmd_desc))
+            end
+          rescue ex
+            LibWGPU.command_buffer_release(cmd) unless cmd.null?
+            raise ex
+          end
           raise Error.new("command_encoder_finish returned NULL") if cmd.null?
           begin
             LibWGPU.queue_submit(queue, LibC::SizeT.new(1), pointerof(cmd))

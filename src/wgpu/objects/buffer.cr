@@ -113,6 +113,20 @@ module WGPU
     def destroy : Nil
       LibWGPU.buffer_destroy(handle)
       @mapped = false
+      @destroyed = true
+    end
+
+    @destroyed = false
+
+    # Why the buffer cannot be used by a submitted command buffer (mapped or
+    # destroyed), or nil. Checked by `Queue#submit`: wgpu-native aborts the
+    # process on these submit-time errors instead of reporting them.
+    protected def submit_error : String?
+      if @mapped
+        "#{self} is still mapped: unmap it before submitting commands that use it"
+      elsif @destroyed
+        "#{self} was destroyed: it cannot be used by submitted commands"
+      end
     end
 
     private def map(mode : LibWGPU::MapMode, offset : Int, size : Int, timeout : Time::Span) : Nil
@@ -122,6 +136,18 @@ module WGPU
 
     private def release_handle : Nil
       LibWGPU.buffer_release(@handle)
+    end
+  end
+
+  module Internal
+    # Raises `WGPU::ValidationError` if one of `buffers` cannot be used by
+    # submitted commands (see `Buffer#submit_error`).
+    def check_submittable(buffers : Array(Buffer), context : String) : Nil
+      buffers.each do |buffer|
+        if reason = buffer.submit_error
+          raise ValidationError.new("#{context}: #{reason}")
+        end
+      end
     end
   end
 
