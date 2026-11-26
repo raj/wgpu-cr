@@ -10,14 +10,17 @@ private macro wgpu_common_pass_commands(prefix)
     LibWGPU.{{prefix.id}}_set_bind_group(handle, index.to_u32, bind_group, LibC::SizeT.new(count), offsets)
   end
 
+  # Opens a labeled group of commands (shown by GPU debuggers).
   def push_debug_group(label : String) : Nil
     LibWGPU.{{prefix.id}}_push_debug_group(handle, Internal.string_view(label))
   end
 
+  # Closes the innermost debug group.
   def pop_debug_group : Nil
     LibWGPU.{{prefix.id}}_pop_debug_group(handle)
   end
 
+  # Inserts a single labeled marker.
   def insert_debug_marker(label : String) : Nil
     LibWGPU.{{prefix.id}}_insert_debug_marker(handle, Internal.string_view(label))
   end
@@ -26,6 +29,7 @@ end
 # Draw commands shared by `RenderPassEncoder` and `RenderBundleEncoder`
 # (which also expand `wgpu_common_pass_commands`).
 private macro wgpu_render_commands(prefix)
+  # Selects the render pipeline for the next draws.
   def set_pipeline(pipeline : RenderPipeline) : Nil
     LibWGPU.{{prefix.id}}_set_pipeline(handle, pipeline)
   end
@@ -42,10 +46,12 @@ private macro wgpu_render_commands(prefix)
     LibWGPU.{{prefix.id}}_set_index_buffer(handle, buffer, format, offset.to_u64, size.to_u64)
   end
 
+  # Draws `vertex_count` vertices, `instance_count` times.
   def draw(vertex_count : Int, instance_count : Int = 1, first_vertex : Int = 0, first_instance : Int = 0) : Nil
     LibWGPU.{{prefix.id}}_draw(handle, vertex_count.to_u32, instance_count.to_u32, first_vertex.to_u32, first_instance.to_u32)
   end
 
+  # Draws `index_count` indices of the index buffer, `instance_count` times.
   def draw_indexed(index_count : Int, instance_count : Int = 1, first_index : Int = 0,
                    base_vertex : Int = 0, first_instance : Int = 0) : Nil
     LibWGPU.{{prefix.id}}_draw_indexed(handle, index_count.to_u32, instance_count.to_u32, first_index.to_u32,
@@ -58,6 +64,7 @@ private macro wgpu_render_commands(prefix)
     LibWGPU.{{prefix.id}}_draw_indirect(handle, buffer, offset.to_u64)
   end
 
+  # Indexed draw with arguments read from `buffer` (`Indirect` usage).
   def draw_indexed_indirect(buffer : Buffer, offset : Int = 0) : Nil
     track(buffer)
     LibWGPU.{{prefix.id}}_draw_indexed_indirect(handle, buffer, offset.to_u64)
@@ -105,10 +112,12 @@ module WGPU
 
     wgpu_common_pass_commands(compute_pass_encoder)
 
+    # Selects the compute pipeline for the next dispatches.
     def set_pipeline(pipeline : ComputePipeline) : Nil
       LibWGPU.compute_pass_encoder_set_pipeline(handle, pipeline)
     end
 
+    # Runs `x × y × z` workgroups.
     def dispatch_workgroups(x : Int, y : Int = 1, z : Int = 1) : Nil
       LibWGPU.compute_pass_encoder_dispatch_workgroups(handle, x.to_u32, y.to_u32, z.to_u32)
     end
@@ -148,12 +157,14 @@ module WGPU
     wgpu_common_pass_commands(render_pass_encoder)
     wgpu_render_commands(render_pass_encoder)
 
+    # Maps clip space to this rectangle of the attachments (in pixels).
     def set_viewport(x : Number, y : Number, width : Number, height : Number,
                      min_depth : Number = 0.0, max_depth : Number = 1.0) : Nil
       LibWGPU.render_pass_encoder_set_viewport(handle, x.to_f32, y.to_f32, width.to_f32, height.to_f32,
         min_depth.to_f32, max_depth.to_f32)
     end
 
+    # Discards fragments outside this rectangle (in pixels).
     def set_scissor_rect(x : Int, y : Int, width : Int, height : Int) : Nil
       LibWGPU.render_pass_encoder_set_scissor_rect(handle, x.to_u32, y.to_u32, width.to_u32, height.to_u32)
     end
@@ -164,6 +175,7 @@ module WGPU
       LibWGPU.render_pass_encoder_set_blend_constant(handle, pointerof(color))
     end
 
+    # Reference value for the stencil tests.
     def set_stencil_reference(reference : Int) : Nil
       LibWGPU.render_pass_encoder_set_stencil_reference(handle, reference.to_u32)
     end

@@ -9,6 +9,7 @@ module WGPU
   module LayoutEntry
     extend self
 
+    # A uniform/storage buffer binding (`type`: `Uniform`, `Storage`, `ReadOnlyStorage`).
     def buffer(binding : Int, visibility : LibWGPU::ShaderStage,
                type : LibWGPU::BufferBindingType = LibWGPU::BufferBindingType::Storage,
                has_dynamic_offset : Bool = false, min_binding_size : Int = 0) : LibWGPU::BindGroupLayoutEntry
@@ -19,6 +20,7 @@ module WGPU
       )
     end
 
+    # A sampler binding (`Filtering`, `NonFiltering` or `Comparison`).
     def sampler(binding : Int, visibility : LibWGPU::ShaderStage,
                 type : LibWGPU::SamplerBindingType = LibWGPU::SamplerBindingType::Filtering) : LibWGPU::BindGroupLayoutEntry
       LibWGPU::BindGroupLayoutEntry.new(
@@ -27,6 +29,7 @@ module WGPU
       )
     end
 
+    # A sampled texture binding.
     def texture(binding : Int, visibility : LibWGPU::ShaderStage,
                 sample_type : LibWGPU::TextureSampleType = LibWGPU::TextureSampleType::Float,
                 view_dimension : LibWGPU::TextureViewDimension = LibWGPU::TextureViewDimension::N2D,
@@ -38,6 +41,7 @@ module WGPU
       )
     end
 
+    # A storage texture binding (`format` is required).
     def storage_texture(binding : Int, visibility : LibWGPU::ShaderStage, format : LibWGPU::TextureFormat,
                         access : LibWGPU::StorageTextureAccess = LibWGPU::StorageTextureAccess::WriteOnly,
                         view_dimension : LibWGPU::TextureViewDimension = LibWGPU::TextureViewDimension::N2D) : LibWGPU::BindGroupLayoutEntry

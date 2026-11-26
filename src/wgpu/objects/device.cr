@@ -18,6 +18,7 @@ module WGPU
       super(handle)
     end
 
+    # The instance this device comes from (through its adapter).
     def instance : Instance
       @adapter.instance
     end
@@ -42,6 +43,7 @@ module WGPU
       @adapter.info
     end
 
+    # The limits the device was created with.
     def limits : LibWGPU::Limits
       limits = LibWGPU::Limits.new
       status = LibWGPU.device_get_limits(handle, pointerof(limits))
@@ -49,12 +51,14 @@ module WGPU
       limits
     end
 
+    # Optional features enabled on the device.
     def features : Array(LibWGPU::FeatureName)
       supported = LibWGPU::SupportedFeatures.new
       LibWGPU.device_get_features(handle, pointerof(supported))
       Internal.features(supported)
     end
 
+    # True if `feature` is enabled on the device.
     def has_feature?(feature : LibWGPU::FeatureName) : Bool
       LibWGPU.device_has_feature(handle, feature) != 0
     end
@@ -84,6 +88,7 @@ module WGPU
       Internal.error_scope(handle, filter) { yield }
     end
 
+    # Turns the automatic error checks on or off, for the device and its queue.
     def error_checks=(enabled : Bool) : Bool
       @queue.try &.error_checks = enabled
       @error_checks = enabled
@@ -234,6 +239,7 @@ module WGPU
       end
     end
 
+    # Creates an encoder to record copies and passes (see `CommandEncoder`).
     def create_command_encoder(label : String? = nil) : CommandEncoder
       desc = LibWGPU::CommandEncoderDescriptor.new(label: Internal.label_view(label))
       CommandEncoder.new(self, LibWGPU.device_create_command_encoder(handle, pointerof(desc)), label)

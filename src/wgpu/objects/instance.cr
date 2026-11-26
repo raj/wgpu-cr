@@ -9,6 +9,7 @@ module WGPU
   #     end
   #   end
   class Instance < GPUObject(LibWGPU::Instance)
+    # Creates a wgpu instance. Raises `WGPU::Error` if wgpu fails.
     def initialize
       super(WGPU.create_instance)
     end

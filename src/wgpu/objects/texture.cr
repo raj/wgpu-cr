@@ -8,34 +8,42 @@ module WGPU
       super(handle, label)
     end
 
+    # Width in texels.
     def width : UInt32
       LibWGPU.texture_get_width(handle)
     end
 
+    # Height in texels.
     def height : UInt32
       LibWGPU.texture_get_height(handle)
     end
 
+    # Depth (3D textures) or number of array layers.
     def depth_or_array_layers : UInt32
       LibWGPU.texture_get_depth_or_array_layers(handle)
     end
 
+    # Number of mip levels.
     def mip_level_count : UInt32
       LibWGPU.texture_get_mip_level_count(handle)
     end
 
+    # Number of samples per texel (1 unless multisampled).
     def sample_count : UInt32
       LibWGPU.texture_get_sample_count(handle)
     end
 
+    # 1D, 2D or 3D.
     def dimension : LibWGPU::TextureDimension
       LibWGPU.texture_get_dimension(handle)
     end
 
+    # Texel format.
     def format : LibWGPU::TextureFormat
       LibWGPU.texture_get_format(handle)
     end
 
+    # Usage flags the texture was created with.
     def usage : LibWGPU::TextureUsage
       LibWGPU.texture_get_usage(handle)
     end

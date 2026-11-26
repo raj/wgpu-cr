@@ -58,56 +58,55 @@ window = LibGLFW.create_window(WIDTH, HEIGHT, "wgpu-cr — triangle (object laye
 abort "glfwCreateWindow failed" if window.null?
 
 WGPU::Instance.new do |instance|
-  surface = create_surface(instance, window)
-  adapter = instance.request_adapter(compatible_surface: surface)
-  device = adapter.request_device
-  puts "wgpu-cr #{WGPU::VERSION} (wgpu-native #{WGPU::NATIVE_VERSION}) on #{adapter.info.description}"
+  # The surface must not outlive the window: `use` releases it at block exit.
+  # The pipeline, shader, device… are released when the GC collects them.
+  create_surface(instance, window).use do |surface|
+    adapter = instance.request_adapter(compatible_surface: surface)
+    device = adapter.request_device
+    puts "wgpu-cr #{WGPU::VERSION} (wgpu-native #{WGPU::NATIVE_VERSION}) on #{adapter.info.description}"
 
-  format = surface.capabilities(adapter).formats.first? || abort "surface has no supported format"
-  LibGLFW.get_framebuffer_size(window, out fb_w, out fb_h)
-  surface.configure(device, format, fb_w, fb_h)
+    format = surface.capabilities(adapter).formats.first? || abort "surface has no supported format"
+    LibGLFW.get_framebuffer_size(window, out fb_w, out fb_h)
+    surface.configure(device, format, fb_w, fb_h)
 
-  shader = device.create_shader_module(WGSL)
-  pipeline = device.create_render_pipeline(
-    WGPU::VertexState.new(shader, "vs_main"),
-    WGPU::FragmentState.new(shader, [WGPU::ColorTargetState.new(format)], "fs_main"))
+    shader = device.create_shader_module(WGSL)
+    pipeline = device.create_render_pipeline(
+      WGPU::VertexState.new(shader, "vs_main"),
+      WGPU::FragmentState.new(shader, [WGPU::ColorTargetState.new(format)], "fs_main"))
 
-  # Set WGPU_FRAMES=N to auto-quit after N frames (handy for headless testing).
-  max_frames = ENV["WGPU_FRAMES"]?.try(&.to_i?)
-  frames = 0
-  puts "Rendering — close the window to quit."
-  while LibGLFW.window_should_close(window) == 0
-    break if max_frames && frames >= max_frames
-    LibGLFW.poll_events
+    # Set WGPU_FRAMES=N to auto-quit after N frames (handy for headless testing).
+    max_frames = ENV["WGPU_FRAMES"]?.try(&.to_i?)
+    frames = 0
+    puts "Rendering — close the window to quit."
+    while LibGLFW.window_should_close(window) == 0
+      break if max_frames && frames >= max_frames
+      LibGLFW.poll_events
 
-    texture = surface.current_texture
-    unless texture
-      # Outdated/Lost (e.g. after a resize): reconfigure, then skip the frame.
-      if surface.last_status.try { |st| st.outdated? || st.lost? }
-        LibGLFW.get_framebuffer_size(window, out w, out h)
-        surface.configure(device, format, w, h) if w > 0 && h > 0
-      end
-      next
-    end
-
-    texture.use do
-      texture.create_view.use do |view|
-        encoder = device.create_command_encoder
-        encoder.begin_render_pass([WGPU::ColorAttachment.new(view, clear_value: {0.02, 0.02, 0.05, 1.0})]) do |pass|
-          pass.set_pipeline(pipeline)
-          pass.draw(3)
+      texture = surface.current_texture
+      unless texture
+        # Outdated/Lost (e.g. after a resize): reconfigure, then skip the frame.
+        if surface.last_status.try { |st| st.outdated? || st.lost? }
+          LibGLFW.get_framebuffer_size(window, out w, out h)
+          surface.configure(device, format, w, h) if w > 0 && h > 0
         end
-        device.queue.submit(encoder.finish) # consumes the encoder and the command buffer
-        surface.present
+        next
       end
-    end
-    frames += 1
-  end
-  puts "#{frames} frames rendered."
 
-  # The pipeline, shader, device… are released when the GC collects them (or
-  # with `#release`). The surface goes first: it must not outlive the window.
-  surface.release
+      texture.use do
+        texture.create_view.use do |view|
+          encoder = device.create_command_encoder
+          encoder.begin_render_pass([WGPU::ColorAttachment.new(view, clear_value: {0.02, 0.02, 0.05, 1.0})]) do |pass|
+            pass.set_pipeline(pipeline)
+            pass.draw(3)
+          end
+          device.queue.submit(encoder.finish) # consumes the encoder and the command buffer
+          surface.present
+        end
+      end
+      frames += 1
+    end
+    puts "#{frames} frames rendered."
+  end
 end
 
 LibGLFW.destroy_window(window)

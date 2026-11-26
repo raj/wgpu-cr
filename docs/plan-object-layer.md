@@ -312,7 +312,7 @@ headless via `WGPU_FRAMES`).
 >   tout mettre dans `encoder.cr`. `QuerySet` (occlusion/timestamps) non fait.
 > - Aucun stub rencontré sur ces chemins (sondés un par un).
 
-### Phase 4 — Consolidation
+### Phase 4 — Consolidation ✅
 
 1. **Délégation** : ~~réécrire les helpers statiques pour appeler la couche
    objet~~. *Revu en phase 1* : c'est la couche objet qui appelle les helpers
@@ -327,6 +327,22 @@ headless via `WGPU_FRAMES`).
 4. Optionnel (post-plan) : ~~`push/pop_error_scope`~~ (remonté avant la phase 3, cf. §6), `create_compute_pipeline_async`,
    `shader_module.compilation_info`, `queue.on_submitted_work_done`,
    `device.destroy`.
+
+> **Réalisé** :
+> 1. Audit de délégation : la couche objet appelle les helpers statiques
+>    (`request_*`, `create_buffer`, `create_shader_module`,
+>    `create_compute_pipeline`, `compute_bind_group_layout`, `dispatch`,
+>    `read_buffer`), et la logique partagée (attente, mapping, error scopes,
+>    StringView) est dans `WGPU::Internal`. Restent volontairement distincts :
+>    `create_bind_group` (Hash de ressources vs tableau de tuples) et
+>    `write_buffer` (trois lignes).
+> 2. `examples/compute_oo.cr` ajouté ; `compute_wrapped.cr` gardé tel quel :
+>    c'est la démo des helpers statiques (les trois niveaux ont chacun leur exemple).
+> 3. README : trois niveaux, section « Object layer » (exemple vérifié,
+>    tableau avant/après, ownership, erreurs, stubs de wgpu-native),
+>    statut et architecture à jour ; doc-strings sur toutes les méthodes
+>    publiques de la couche objet (`crystal docs` : `Internal` masqué).
+> 4. Optionnels : non faits (cf. « Coming next » du README).
 
 ---
 
@@ -374,12 +390,18 @@ Dans `spec/objects_spec.cr` (tous headless, même schéma que l'existant) :
 
 ## 7. Checklist de validation
 
-- [ ] `crystal spec` vert (anciens + nouveaux specs)
-- [ ] `crystal run examples/compute_oo.cr` → résultat ×2 correct
-- [ ] Aucun `*_release` à écrire à la main dans l'exemple objet (cleanup
+- [x] `crystal spec` vert (anciens + nouveaux specs)
+- [x] `crystal run examples/compute_oo.cr` → résultat ×2 correct
+- [x] Aucun `*_release` à écrire à la main dans l'exemple objet (cleanup
       automatique ou blocs)
-- [ ] Double-release et finalize-safety testés
-- [ ] API statique inchangée : les specs existants passent sans modification
-- [ ] README mis à jour (« Coming next » → « ✅ Object layer »)
-- [ ] `crystal tool format` propre, `crystal build --warnings-as-errors` (si
-      activé dans la CI) vert
+- [x] Double-release et finalize-safety testés
+- [x] API statique inchangée : les specs existants passent sans modification
+- [x] README mis à jour (« Coming next » → « ✅ Object layer »)
+- [x] `crystal tool format` propre, `crystal build --warnings-as-errors` (si
+      activé dans la CI) vert (`--warnings all --error-on-warnings`)
+
+> Validé : 43 specs vertes (dont `spec/wgpu_spec.cr` jamais modifié),
+> `compute_oo` / `compute_wrapped` / `compute` corrects, `triangle_oo` et
+> `triangle` rendent sur Wayland. Seul écart d'API statique : `WGPU.dispatch`
+> et `WGPU.read_buffer` lèvent `WGPU::ValidationError` là où le process
+> abortait (chemin d'erreur uniquement).

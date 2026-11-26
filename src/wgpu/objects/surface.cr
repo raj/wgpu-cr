@@ -29,6 +29,7 @@ module WGPU
       super(handle, label)
     end
 
+    # Formats, present modes, alpha modes and usages the surface supports with `adapter`.
     def capabilities(adapter : Adapter) : SurfaceCapabilities
       caps = LibWGPU::SurfaceCapabilities.new
       status = LibWGPU.surface_get_capabilities(handle, adapter, pointerof(caps))
@@ -69,6 +70,7 @@ module WGPU
       @device = device
     end
 
+    # Releases the swapchain textures (configure again before rendering).
     def unconfigure : Nil
       LibWGPU.surface_unconfigure(handle)
       @device = nil

@@ -23,6 +23,7 @@ module WGPU
       LibWGPU.buffer_get_size(handle)
     end
 
+    # Usage flags the buffer was created with.
     def usage : LibWGPU::BufferUsage
       LibWGPU.buffer_get_usage(handle)
     end

@@ -14,6 +14,7 @@ module WGPU
     # failing silently or aborting the process.
     property? error_checks : Bool
 
+    # Gets the queue of `device` (prefer `Device#queue`, which caches it).
     def initialize(device : Device)
       @instance = device.instance
       @error_checks = device.error_checks?

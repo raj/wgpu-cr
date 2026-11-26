@@ -40,12 +40,14 @@ module WGPU
       request_device(device_lost_callback, uncaptured_error_callback, timeout).use { |device| yield device }
     end
 
+    # Vendor, device name, backend and type of the adapter.
     def info : AdapterInfo
       info = LibWGPU::AdapterInfo.new
       status = LibWGPU.adapter_get_info(handle, pointerof(info))
       Internal.adapter_info(info, status)
     end
 
+    # The best limits the adapter supports.
     def limits : LibWGPU::Limits
       limits = LibWGPU::Limits.new
       status = LibWGPU.adapter_get_limits(handle, pointerof(limits))
@@ -53,12 +55,14 @@ module WGPU
       limits
     end
 
+    # Optional features the adapter supports.
     def features : Array(LibWGPU::FeatureName)
       supported = LibWGPU::SupportedFeatures.new
       LibWGPU.adapter_get_features(handle, pointerof(supported))
       Internal.features(supported)
     end
 
+    # True if the adapter supports `feature` (a real `Bool`: the C one is an integer).
     def has_feature?(feature : LibWGPU::FeatureName) : Bool
       LibWGPU.adapter_has_feature(handle, feature) != 0
     end
