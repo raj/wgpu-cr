@@ -268,7 +268,7 @@ statique).
 >   Les passes (compute/render) restent en phase 3 ; `device.dispatch` délègue
 >   à `WGPU.dispatch`.
 
-### Phase 3 — Encoders, passes, surface
+### Phase 3 — Encoders, passes, surface ✅
 
 | Classe | Méthodes | FFI |
 |---|---|---|
@@ -285,6 +285,32 @@ statique).
 
 **Livrable** : render d'un triangle via l'API objet (exemple ou spec optionnel
 headless via `WGPU_FRAMES`).
+
+> **Réalisé** : les deux. `examples/triangle_oo.cr` (GLFW, sans aucun
+> `*_release` manuel, testé 120 frames sur Wayland) et des specs headless
+> qui vérifient les pixels rendus (triangle, buffers vertex/index + uniform
+> + scissor, render bundle, test de profondeur, compute pass explicite).
+> Choix et écarts :
+> - `#end` → **`#end_pass`** (`end` est un mot-clé Crystal), qui consomme
+>   (relâche) le pass encoder ; formes bloc `begin_compute_pass { }` /
+>   `begin_render_pass(attachments) { }` qui appellent `end_pass`.
+> - Pas de `RenderPassDescriptor` : records `WGPU::ColorAttachment` et
+>   `WGPU::DepthStencilAttachment` passés à `begin_render_pass`.
+> - Render pipeline : **records** (`VertexState`, `VertexBufferLayout`,
+>   `VertexAttribute`, `FragmentState`, `ColorTargetState`, `PrimitiveState`,
+>   `DepthStencilState`, `MultisampleState`) : c'est le « struct d'options »
+>   prévu par 2.7. Un `entry_point` nil laisse wgpu choisir (vérifié).
+> - Commandes de dessin partagées entre `RenderPassEncoder` et
+>   `RenderBundleEncoder` via des macros privées au fichier (`passes.cr`).
+> - `Surface` : `instance.create_surface(wayland_display:, wayland_surface:)`,
+>   `(xlib_display:, xlib_window:)`, `(xcb_…)`, `(metal_layer:)`,
+>   `(hinstance:, hwnd:)`, `(android_window:)` : une surcharge par
+>   plateforme, sélectionnée par les arguments nommés. `current_texture`
+>   renvoie `nil` pour Timeout/Outdated/Lost (`last_status` dit lequel) et
+>   lève pour les statuts fatals.
+> - Fichiers : `passes.cr`, `render_pipeline.cr`, `surface.cr` au lieu de
+>   tout mettre dans `encoder.cr`. `QuerySet` (occlusion/timestamps) non fait.
+> - Aucun stub rencontré sur ces chemins (sondés un par un).
 
 ### Phase 4 — Consolidation
 

@@ -342,4 +342,213 @@ describe "WGPU object layer" do
       end
     end
   end
+
+  describe "phase 3: passes and render" do
+    it "runs the compute ×2 through an explicit compute pass" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        input = Slice(Float32).new(128) { |i| i.to_f32 }
+        storage = device.create_buffer_with_data(input, LibWGPU::BufferUsage::Storage | LibWGPU::BufferUsage::CopySrc)
+        pipeline = device.create_compute_pipeline(device.create_shader_module(DOUBLE_WGSL))
+        bind_group = device.create_bind_group(pipeline.bind_group_layout(0), {0 => storage})
+
+        encoder = device.create_command_encoder
+        encoder.begin_compute_pass(label: "double") do |pass|
+          pass.set_pipeline(pipeline)
+          pass.set_bind_group(0, bind_group)
+          pass.dispatch_workgroups(2)
+        end
+        device.queue.submit(encoder.finish)
+
+        device.read_buffer(storage).unsafe_slice_of(Float32).to_a.should eq(input.to_a.map { |v| v * 2 })
+        device.release
+      end
+    end
+
+    it "renders a triangle offscreen" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        target = render_target(device)
+        shader = device.create_shader_module(TRIANGLE_WGSL)
+        pipeline = device.create_render_pipeline(
+          WGPU::VertexState.new(shader, "vs_main"),
+          WGPU::FragmentState.new(shader, [WGPU::ColorTargetState.new(RT_FORMAT)], "fs_main"),
+          label: "triangle")
+
+        encoder = device.create_command_encoder
+        encoder.begin_render_pass([WGPU::ColorAttachment.new(target.create_view, clear_value: {0.0, 0.0, 1.0, 1.0})]) do |pass|
+          pass.set_pipeline(pipeline)
+          pass.draw(3)
+        end
+        device.queue.submit(encoder.finish)
+
+        pixels = read_pixels(device, target)
+        expect_pixel(pixels, 32, 32, {255, 115, 26, 255}) # inside: (1.0, 0.45, 0.1)
+        expect_pixel(pixels, 1, 1, {0, 0, 255, 255})      # corner: clear color
+        device.release
+      end
+    end
+
+    it "draws indexed vertices with a uniform bind group, inside a scissor rect" do
+      wgsl = <<-W
+        @group(0) @binding(0) var<uniform> tint: vec4<f32>;
+        @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+        @fragment fn fs() -> @location(0) vec4<f32> { return tint; }
+        W
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        target = render_target(device)
+        shader = device.create_shader_module(wgsl)
+        layout = WGPU::VertexBufferLayout.new(8, [WGPU::VertexAttribute.new(LibWGPU::VertexFormat::Float32x2, 0, 0)])
+        pipeline = device.create_render_pipeline(WGPU::VertexState.new(shader, buffers: [layout]),
+          WGPU::FragmentState.new(shader, [WGPU::ColorTargetState.new(RT_FORMAT)]))
+
+        # Full-screen quad: 4 vertices, 6 indices.
+        vertices = device.create_buffer_with_data(Slice[-1f32, -1f32, 1f32, -1f32, 1f32, 1f32, -1f32, 1f32], LibWGPU::BufferUsage::Vertex)
+        indices = device.create_buffer_with_data(Slice[0u16, 1u16, 2u16, 0u16, 2u16, 3u16], LibWGPU::BufferUsage::Index)
+        tint = device.create_buffer_with_data(Slice[0f32, 1f32, 0f32, 1f32], LibWGPU::BufferUsage::Uniform)
+        bind_group = device.create_bind_group(pipeline.bind_group_layout(0), {0 => tint})
+
+        encoder = device.create_command_encoder
+        encoder.begin_render_pass([WGPU::ColorAttachment.new(target.create_view)]) do |pass|
+          pass.set_pipeline(pipeline)
+          pass.set_bind_group(0, bind_group)
+          pass.set_vertex_buffer(0, vertices)
+          pass.set_index_buffer(indices, LibWGPU::IndexFormat::Uint16)
+          pass.set_scissor_rect(32, 0, 32, 64) # right half only
+          pass.draw_indexed(6)
+        end
+        device.queue.submit(encoder.finish)
+
+        pixels = read_pixels(device, target)
+        expect_pixel(pixels, 48, 10, {0, 255, 0, 255}) # inside the scissor
+        expect_pixel(pixels, 16, 10, {0, 0, 0, 255})   # outside: clear color
+        device.release
+      end
+    end
+
+    it "replays a render bundle" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        target = render_target(device)
+        shader = device.create_shader_module(TRIANGLE_WGSL)
+        pipeline = device.create_render_pipeline(
+          WGPU::VertexState.new(shader, "vs_main"),
+          WGPU::FragmentState.new(shader, [WGPU::ColorTargetState.new(RT_FORMAT)], "fs_main"))
+
+        bundle_encoder = device.create_render_bundle_encoder([RT_FORMAT])
+        bundle_encoder.set_pipeline(pipeline)
+        bundle_encoder.draw(3)
+        bundle = bundle_encoder.finish
+        bundle_encoder.released?.should be_true
+
+        encoder = device.create_command_encoder
+        encoder.begin_render_pass([WGPU::ColorAttachment.new(target.create_view)]) do |pass|
+          pass.execute_bundles(bundle)
+        end
+        device.queue.submit(encoder.finish)
+
+        pixels = read_pixels(device, target)
+        expect_pixel(pixels, 32, 32, {255, 115, 26, 255})
+        expect_pixel(pixels, 1, 1, {0, 0, 0, 255})
+        device.release
+      end
+    end
+
+    it "depth-tests with a depth attachment" do
+      # Two full-screen triangles drawn in order: instance 0 red and near,
+      # instance 1 green and far. Without depth the last one (green) wins.
+      wgsl = <<-W
+        struct VOut { @builtin(position) pos: vec4<f32>, @location(0) color: vec4<f32> };
+        @vertex fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> VOut {
+          var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+          var o: VOut;
+          o.pos = vec4<f32>(p[v], select(0.2, 0.8, i == 1u), 1.0);
+          o.color = select(vec4<f32>(1.0, 0.0, 0.0, 1.0), vec4<f32>(0.0, 1.0, 0.0, 1.0), i == 1u);
+          return o;
+        }
+        @fragment fn fs(in: VOut) -> @location(0) vec4<f32> { return in.color; }
+        W
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        shader = device.create_shader_module(wgsl)
+        depth_format = LibWGPU::TextureFormat::Depth32Float
+        depth = device.create_texture(64, 64, format: depth_format, usage: LibWGPU::TextureUsage::RenderAttachment)
+
+        {nil, WGPU::DepthStencilState.new(depth_format)}.each do |depth_state|
+          target = render_target(device)
+          pipeline = device.create_render_pipeline(WGPU::VertexState.new(shader),
+            WGPU::FragmentState.new(shader, [WGPU::ColorTargetState.new(RT_FORMAT)]), depth_stencil: depth_state)
+          encoder = device.create_command_encoder
+          depth_attachment = depth_state ? WGPU::DepthStencilAttachment.new(depth.create_view) : nil
+          encoder.begin_render_pass([WGPU::ColorAttachment.new(target.create_view)], depth_attachment) do |pass|
+            pass.set_pipeline(pipeline)
+            pass.draw(3, instance_count: 2)
+          end
+          device.queue.submit(encoder.finish)
+
+          expected = depth_state ? {255, 0, 0, 255} : {0, 255, 0, 255}
+          expect_pixel(read_pixels(device, target), 32, 32, expected)
+        end
+        device.release
+      end
+    end
+
+    it "ends passes in block form and releases them" do
+      WGPU::Instance.new do |instance|
+        device = instance.request_adapter.request_device
+        target = render_target(device)
+        encoder = device.create_command_encoder
+
+        pass_ref = nil
+        encoder.begin_render_pass([WGPU::ColorAttachment.new(target.create_view)]) { |pass| pass_ref = pass; :done }.should eq(:done)
+        pass_ref.not_nil!.released?.should be_true
+
+        pass = encoder.begin_compute_pass
+        pass.end_pass
+        pass.released?.should be_true
+        expect_raises(WGPU::Error, /ComputePassEncoder used after release/) { pass.dispatch_workgroups(1) }
+
+        device.queue.submit(encoder.finish)
+        device.release
+      end
+    end
+  end
+end
+
+private RT_FORMAT = LibWGPU::TextureFormat::RGBA8Unorm
+
+private TRIANGLE_WGSL = <<-W
+  @vertex fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 3>(vec2<f32>(0.0, 0.5), vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5));
+    return vec4<f32>(p[i], 0.0, 1.0);
+  }
+  @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.45, 0.1, 1.0); }
+  W
+
+# 64×64 RGBA8 render target that can be copied back (64 × 4 = 256 bytes per
+# row, already aligned for texture → buffer copies).
+private def render_target(device : WGPU::Device) : WGPU::Texture
+  device.create_texture(64, 64, format: RT_FORMAT,
+    usage: LibWGPU::TextureUsage::RenderAttachment | LibWGPU::TextureUsage::CopySrc)
+end
+
+private def read_pixels(device : WGPU::Device, texture : WGPU::Texture) : Bytes
+  staging = device.create_buffer(256 * 64, LibWGPU::BufferUsage::MapRead | LibWGPU::BufferUsage::CopyDst)
+  encoder = device.create_command_encoder
+  encoder.copy_texture_to_buffer(texture, staging, bytes_per_row: 256)
+  device.queue.submit(encoder.finish)
+  staging.map_read(&.dup).tap { staging.release }
+end
+
+private def pixel(pixels : Bytes, x : Int, y : Int) : {Int32, Int32, Int32, Int32}
+  i = (y * 64 + x) * 4
+  {pixels[i].to_i, pixels[i + 1].to_i, pixels[i + 2].to_i, pixels[i + 3].to_i}
+end
+
+# Pixel comparison with ±1 per channel: float → unorm rounding differs
+# between GPUs (e.g. 0.1 × 255 = 25.5 gives 25 here, maybe 26 on lavapipe).
+private def expect_pixel(pixels : Bytes, x : Int, y : Int, expected : {Int32, Int32, Int32, Int32}) : Nil
+  got = pixel(pixels, x, y)
+  4.times { |c| got[c].should be_close(expected[c], 1), "pixel (#{x}, #{y}) = #{got}, expected #{expected}" }
 end

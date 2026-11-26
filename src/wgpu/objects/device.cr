@@ -149,7 +149,7 @@ module WGPU
 
     # Creates a pipeline layout: bind group layout `i` is used for group `i`.
     def create_pipeline_layout(bind_group_layouts : Enumerable(BindGroupLayout), label : String? = nil) : PipelineLayout
-      handles = bind_group_layouts.map(&.to_unsafe)
+      handles = bind_group_layouts.to_a.map(&.to_unsafe)
       desc = LibWGPU::PipelineLayoutDescriptor.new(
         label: Internal.label_view(label),
         bind_group_layout_count: LibC::SizeT.new(handles.size),
