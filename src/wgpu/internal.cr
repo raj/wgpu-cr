@@ -56,6 +56,46 @@ module WGPU
     end
 
     # ------------------------------------------------------------------
+    # Buffer mapping — synchronous.
+    # ------------------------------------------------------------------
+
+    private struct MapResult
+      property status : LibWGPU::MapAsyncStatus = LibWGPU::MapAsyncStatus::Error
+      property message : String = ""
+      property done : Bool = false
+    end
+
+    # Maps `size` bytes of `buffer` at `offset` for `mode` (Read or Write),
+    # blocking until wgpu answers. Raises `WGPU::Error` on failure or timeout.
+    def map_buffer(instance : LibWGPU::Instance, buffer : LibWGPU::Buffer, mode : LibWGPU::MapMode,
+                   offset : UInt64, size : UInt64, timeout : Time::Span = 5.seconds) : Nil
+      # Box on the heap: the C side keeps this pointer as `userdata1` and may
+      # fire the callback after a timeout has unwound this frame (see `wait_until`).
+      result = Pointer(MapResult).malloc(1)
+      result.value = MapResult.new
+
+      callback = ->(status : LibWGPU::MapAsyncStatus, message : LibWGPU::StringView, u1 : Void*, _u2 : Void*) do
+        r = u1.as(Pointer(MapResult))
+        r.value.status = status
+        r.value.message = Internal.view_to_s(message)
+        r.value.done = true
+        nil
+      end
+
+      info = LibWGPU::BufferMapCallbackInfo.new
+      info.mode = LibWGPU::CallbackMode::AllowProcessEvents
+      info.callback = callback
+      info.userdata1 = result.as(Void*)
+
+      LibWGPU.buffer_map_async(buffer, mode, LibC::SizeT.new(offset), LibC::SizeT.new(size), info)
+      wait_until(instance, result.as(Void*), timeout) { result.value.done }
+
+      unless result.value.status.success?
+        raise WGPU::Error.new("buffer_map_async failed: #{result.value.status} #{result.value.message}")
+      end
+    end
+
+    # ------------------------------------------------------------------
     # Synchronous wait over asynchronous callbacks
     # ------------------------------------------------------------------
 

@@ -299,38 +299,9 @@ module WGPU
   # Buffer mapping (for reading) — synchronous.
   # ------------------------------------------------------------------
 
-  private struct MapResult
-    property status : LibWGPU::MapAsyncStatus = LibWGPU::MapAsyncStatus::Error
-    property message : String = ""
-    property done : Bool = false
-  end
-
   def self.map_buffer_read(instance : LibWGPU::Instance, buffer : LibWGPU::Buffer, size : UInt64, offset : UInt64 = 0_u64,
                            timeout : Time::Span = 5.seconds)
-    # Box on the heap — see `request_adapter` / `Internal.wait_until` for why the
-    # callback's `userdata1` must outlive a timed-out stack frame.
-    result = Pointer(MapResult).malloc(1)
-    result.value = MapResult.new
-
-    callback = ->(status : LibWGPU::MapAsyncStatus, message : LibWGPU::StringView, u1 : Void*, _u2 : Void*) do
-      r = u1.as(Pointer(MapResult))
-      r.value.status = status
-      r.value.message = WGPU.view_to_s(message)
-      r.value.done = true
-      nil
-    end
-
-    info = LibWGPU::BufferMapCallbackInfo.new
-    info.mode = LibWGPU::CallbackMode::AllowProcessEvents
-    info.callback = callback
-    info.userdata1 = result.as(Void*)
-
-    LibWGPU.buffer_map_async(buffer, LibWGPU::MapMode::Read, LibC::SizeT.new(offset), LibC::SizeT.new(size), info)
-    Internal.wait_until(instance, result.as(Void*), timeout) { result.value.done }
-
-    unless result.value.status.success?
-      raise Error.new("buffer_map_async failed: #{result.value.status} #{result.value.message}")
-    end
+    Internal.map_buffer(instance, buffer, LibWGPU::MapMode::Read, offset, size, timeout)
   end
 
   # Boxed callback results retained after a timed-out wait — see

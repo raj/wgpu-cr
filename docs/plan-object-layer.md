@@ -219,7 +219,7 @@ automatiques, tests verts.
 > `Buffer#size/usage/destroy`, `Queue#read_buffer` (via `WGPU.read_buffer`).
 > Specs : `spec/objects_spec.cr` (8 exemples, dont finalisation GC réelle).
 
-### Phase 2 — Les ressources créées par le device
+### Phase 2 — Les ressources créées par le device ✅
 
 | Classe | Méthodes principales | FFI couvertes |
 |---|---|---|
@@ -244,6 +244,29 @@ automatiques, tests verts.
 **Livrable** : `spec/objects_spec.cr` rejoue le test compute « ×2 » **entièrement
 en syntaxe objet** (miroir du spec existant, garde la régression de l'API
 statique).
+
+> **Réalisé**, avec ces choix :
+> - `Buffer` : `map_read`/`map_write` (+ formes bloc qui démappent),
+>   `const_mapped_range` (vue `read_only`), `mapped_range`, `read_mapped`/
+>   `write_mapped` (copies), `unmap`, `mapped?`. L'état de mapping est suivi
+>   côté Crystal et les copies passent par `Get(Const)MappedRange` :
+>   `GetMapState`, `ReadMappedRange` et `WriteMappedRange` sont des stubs (§6).
+>   Le mapping est factorisé dans `Internal.map_buffer` (lecture **et** écriture),
+>   `WGPU.map_buffer_read` y délègue.
+> - Bind groups : `device.create_bind_group(layout, {0 => buffer, 1 => view, 2 => sampler})`.
+>   Les valeurs : `Buffer` (entier), `WGPU::BufferBinding` (plage), `Sampler`,
+>   `TextureView` ; un type non supporté est une erreur de compilation.
+> - Layouts : `WGPU::LayoutEntry.buffer/sampler/texture/storage_texture`
+>   construisent les `LibWGPU::BindGroupLayoutEntry`.
+> - Copies texture (`copy_buffer_to_texture`, `copy_texture_to_buffer`,
+>   `queue.write_texture`) : **arguments nommés obligatoires** (`*,`) avec
+>   défauts (texture entière, mip 0) plutôt qu'un struct d'options : lisible
+>   sans type supplémentaire. Le struct reste l'option pour le render pipeline.
+> - Sémantique « consommé » : `CommandEncoder#finish` relâche l'encoder,
+>   `Queue#submit` relâche les `CommandBuffer` soumis (réutilisation → `WGPU::Error`).
+> - En plus du plan : `Queue#write_texture`, `Device#create_texture/create_sampler`.
+>   Les passes (compute/render) restent en phase 3 ; `device.dispatch` délègue
+>   à `WGPU.dispatch`.
 
 ### Phase 3 — Encoders, passes, surface
 
@@ -275,7 +298,7 @@ headless via `WGPU_FRAMES`).
    `compute_wrapped.cr` vers l'objet et le renommer plus tard.
 3. **Docs** : README (section « Object layer », tableau avant/après),
    doc-strings sur chaque classe/méthode publique.
-4. Optionnel (post-plan) : `push/pop_error_scope`, `create_compute_pipeline_async`,
+4. Optionnel (post-plan) : ~~`push/pop_error_scope`~~ (remonté avant la phase 3, cf. §6), `create_compute_pipeline_async`,
    `shader_module.compilation_info`, `queue.on_submitted_work_done`,
    `device.destroy`.
 
@@ -313,6 +336,8 @@ Dans `spec/objects_spec.cr` (tous headless, même schéma que l'existant) :
 | `get_*` parfois +1 (queue, bind group layout) parfois pas | vérifier au cas par cas (webgpu.h : ces deux-là sont possédés, déjà traités dans `api.cr`) ; en cas de doute, `AddRef` défensif |
 | Descripteur render pipeline énorme | struct d'options Crystal dédiée en phase 3 seulement |
 | Stubs `unimplemented!()` de wgpu-native v29 : abort du process, impossible à rattraper (vérifié : tous les `wgpu*SetLabel`, `wgpuDeviceGetAdapterInfo`, `wgpuInstanceGetWGSLLanguageFeatures`, `wgpuInstanceHasWGSLLanguageFeature`, en plus de `wgpuInstanceWaitAny` et `wgpuHasInstanceFeature`) | ne jamais les appeler depuis la couche objet : label fixé à la création seulement, `Device#adapter_info` lu via l'`Adapter`, pas de requêtes WGSL. Sonder chaque nouvelle FFI avant de l'exposer |
+| Stubs supplémentaires trouvés en phase 2 (abort) : `wgpuBufferGetMapState`, `wgpuBufferReadMappedRange`, `wgpuBufferWriteMappedRange`, `wgpuTextureGetTextureBindingViewDimension` | contournés (état de mapping suivi en Crystal, copies via `Get(Const)MappedRange`) ou non exposés |
+| **Erreurs de validation silencieuses puis fatales** : un `create_*` invalide renvoie un objet « invalide » (l'erreur est seulement loguée par le callback d'erreur non capturée), puis `wgpuQueueSubmit` **aborte** le process (panic non rattrapable) | à traiter avant la phase 3 : entourer les `create_*` d'un error scope (`wgpuDevicePushErrorScope`/`PopErrorScope`, **vérifiés fonctionnels** en v29) pour lever `WGPU::Error` dès la création, avec le message exact |
 | Cycle de références Crystal → objets jamais finalisés | pas de référence parent → enfant (cf. 2.3) |
 | Callback de log wgpu (`set_log_stderr`) qui alloue une `String` s'il est déclenché pendant un release depuis un finaliseur → blocage | non observé (aucun log émis pendant les release, même en `Trace`) ; si besoin, différer les release du finaliseur vers une file pré-allouée |
 | CI/GPU requis pour les specs | même approche que le spec actuel (compute headless), déjà en place dans le workflow |

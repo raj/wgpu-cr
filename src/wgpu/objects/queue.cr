@@ -31,10 +31,44 @@ module WGPU
       WGPU.read_buffer(@instance.to_unsafe, @device_handle, buffer.to_unsafe, size.to_u64)
     end
 
-    # Submits finished command buffers for execution.
+    # Submits command buffers for execution. They are consumed: released
+    # here, so any further use raises `WGPU::Error`.
+    #
+    #   queue.submit(encoder.finish)
+    def submit(*command_buffers : CommandBuffer) : Nil
+      submit(command_buffers)
+    end
+
+    # :ditto:
+    def submit(command_buffers : Enumerable(CommandBuffer)) : Nil
+      cmds = command_buffers.to_a
+      raw = cmds.map(&.to_unsafe)
+      LibWGPU.queue_submit(handle, LibC::SizeT.new(raw.size), raw.to_unsafe)
+    ensure
+      cmds.try &.each(&.release)
+    end
+
+    # Submits raw command buffer handles (interop with `LibWGPU`). The caller
+    # keeps ownership of them.
     def submit(command_buffers : Enumerable(LibWGPU::CommandBuffer)) : Nil
       cmds = command_buffers.to_a
       LibWGPU.queue_submit(handle, LibC::SizeT.new(cmds.size), cmds.to_unsafe)
+    end
+
+    # Uploads `data` (any typed Slice) into `texture`. `bytes_per_row` is the
+    # stride of `data` (no 256 alignment needed here, unlike buffer copies).
+    # Covers the whole mip level 0 by default, starting at `origin`.
+    def write_texture(texture : Texture, data : Slice, *, bytes_per_row : Int,
+                      width : Int = texture.width, height : Int = texture.height,
+                      depth_or_array_layers : Int = texture.depth_or_array_layers,
+                      rows_per_image : Int = height, data_offset : Int = 0,
+                      mip_level : Int = 0, origin : {Int, Int, Int} = {0, 0, 0},
+                      aspect : LibWGPU::TextureAspect = LibWGPU::TextureAspect::All) : Nil
+      dst = Internal.texel_copy_texture(texture, mip_level, origin, aspect)
+      layout = Internal.texel_copy_buffer_layout(data_offset, bytes_per_row, rows_per_image)
+      extent = Internal.extent(width, height, depth_or_array_layers)
+      LibWGPU.queue_write_texture(handle, pointerof(dst), data.to_unsafe.as(Void*),
+        LibC::SizeT.new(data.bytesize), pointerof(layout), pointerof(extent))
     end
 
     private def release_handle : Nil
