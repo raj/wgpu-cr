@@ -5,7 +5,9 @@
 # Two API levels:
 #   * `LibWGPU`    — raw FFI binding generated from webgpu.h (1:1 with the C).
 #   * `WGPU`       — idiomatic helpers (StringView, synchronous requests…).
+#   (shared internals — wait loop, StringView — live in `WGPU::Internal`)
 require "./wgpu/native"
+require "./wgpu/internal"
 require "./wgpu/api"
 
 module WGPU

@@ -68,11 +68,12 @@ module WGPU
   #   WGPU.null(LibWGPU::PipelineLayout)
   # The lib's `type X = Void*` typedefs don't expose `.null`, hence this helper.
   def self.null(t : T.class) : T forall T
-    Pointer(Void).null.unsafe_as(T)
+    Internal.null(t)
   end
 
   # ------------------------------------------------------------------
   # StringView: the C API replaces `char const *` with { data, length }.
+  # Implemented in `WGPU::Internal` (internal.cr).
   # ------------------------------------------------------------------
 
   # Builds a `WGPUStringView` pointing into `str`.
@@ -81,17 +82,17 @@ module WGPU
   # the GC) for as long as the C side reads the view. Keep a reference on the
   # Crystal side.
   def self.string_view(str : String) : LibWGPU::StringView
-    LibWGPU::StringView.new(data: str.to_unsafe, length: str.bytesize.to_u64)
+    Internal.string_view(str)
   end
 
   # Canonical NULL StringView ({NULL, WGPU_STRLEN}) per webgpu.h.
   def self.null_string_view : LibWGPU::StringView
-    LibWGPU::StringView.new(data: Pointer(LibC::Char).null, length: LibC::SizeT::MAX)
+    Internal.null_string_view
   end
 
   # Empty view with 0 length — used for optional labels.
   def self.empty_string_view : LibWGPU::StringView
-    LibWGPU::StringView.new(data: Pointer(LibC::Char).null, length: 0_u64)
+    Internal.empty_string_view
   end
 
   # Converts a `WGPUStringView` returned by the C side into a Crystal String.
@@ -99,12 +100,7 @@ module WGPU
   # `to_s` — overriding that would give `WGPU.to_s` a foreign signature.
   # Handles both explicit-length views and null-terminated views (WGPU_STRLEN / SIZE_MAX).
   def self.view_to_s(view : LibWGPU::StringView) : String
-    return "" if view.data.null? || view.length == 0
-    if view.length == LibC::SizeT::MAX
-      String.new(view.data.as(UInt8*))
-    else
-      String.new(view.data.as(UInt8*), view.length)
-    end
+    Internal.view_to_s(view)
   end
 
   # ------------------------------------------------------------------
@@ -180,7 +176,7 @@ module WGPU
                            timeout : Time::Span = 5.seconds) : LibWGPU::Adapter
     # Box the result on the heap: the C side keeps this pointer as `userdata1`
     # and may fire the callback after a timeout has already unwound this frame,
-    # so it must not point at the stack (see `wait_until` / PENDING_TIMEOUT_RESULTS).
+    # so it must not point at the stack (see `Internal.wait_until` / PENDING_TIMEOUT_RESULTS).
     result = Pointer(AdapterResult).malloc(1)
     result.value = AdapterResult.new
 
@@ -203,7 +199,7 @@ module WGPU
     info.userdata1 = result.as(Void*)
 
     LibWGPU.instance_request_adapter(instance, pointerof(options), info)
-    wait_until(instance, result.as(Void*), timeout) { result.value.done }
+    Internal.wait_until(instance, result.as(Void*), timeout) { result.value.done }
 
     unless result.value.status.success?
       raise Error.new("request_adapter failed: #{result.value.status} #{result.value.message}")
@@ -240,7 +236,7 @@ module WGPU
                           device_lost_callback : LibWGPU::DeviceLostCallback? = nil,
                           uncaptured_error_callback : LibWGPU::UncapturedErrorCallback? = nil,
                           timeout : Time::Span = 5.seconds) : LibWGPU::Device
-    # Box on the heap — see `request_adapter` / `wait_until` for why the
+    # Box on the heap — see `request_adapter` / `Internal.wait_until` for why the
     # callback's `userdata1` must outlive a timed-out stack frame.
     result = Pointer(DeviceResult).malloc(1)
     result.value = DeviceResult.new
@@ -275,7 +271,7 @@ module WGPU
     info.userdata1 = result.as(Void*)
 
     LibWGPU.adapter_request_device(adapter, pointerof(descriptor), info)
-    wait_until(instance, result.as(Void*), timeout) { result.value.done }
+    Internal.wait_until(instance, result.as(Void*), timeout) { result.value.done }
 
     unless result.value.status.success?
       raise Error.new("request_device failed: #{result.value.status} #{result.value.message}")
@@ -309,7 +305,7 @@ module WGPU
 
   def self.map_buffer_read(instance : LibWGPU::Instance, buffer : LibWGPU::Buffer, size : UInt64, offset : UInt64 = 0_u64,
                            timeout : Time::Span = 5.seconds)
-    # Box on the heap — see `request_adapter` / `wait_until` for why the
+    # Box on the heap — see `request_adapter` / `Internal.wait_until` for why the
     # callback's `userdata1` must outlive a timed-out stack frame.
     result = Pointer(MapResult).malloc(1)
     result.value = MapResult.new
@@ -328,53 +324,18 @@ module WGPU
     info.userdata1 = result.as(Void*)
 
     LibWGPU.buffer_map_async(buffer, LibWGPU::MapMode::Read, LibC::SizeT.new(offset), LibC::SizeT.new(size), info)
-    wait_until(instance, result.as(Void*), timeout) { result.value.done }
+    Internal.wait_until(instance, result.as(Void*), timeout) { result.value.done }
 
     unless result.value.status.success?
       raise Error.new("buffer_map_async failed: #{result.value.status} #{result.value.message}")
     end
   end
 
-  # Retains boxed callback results whose wait timed out while the C future was
-  # still pending. The C side still holds a raw `userdata1` pointer into that
-  # heap box, so a late callback would write through it after `wait_until`
-  # raised; keeping the box referenced here means it lands in live memory
-  # rather than an allocation the GC has reclaimed and reused. Only ever grows
-  # on the fatal timeout path (which raises), so it does not leak in practice.
-  PENDING_TIMEOUT_MUTEX   = Mutex.new
-  PENDING_TIMEOUT_RESULTS = [] of Void*
-
-  # Pumps the instance event loop until `block` returns true.
-  # Guards against waiting forever if a callback never fires.
-  #
-  # `keep_alive`, when non-null, points at the heap box the pending C callback
-  # writes into (its `userdata1`). On timeout the box is retained (see
-  # `PENDING_TIMEOUT_RESULTS`) before raising, so a late write cannot corrupt
-  # reclaimed memory.
-  #
-  # NOTE: wgpu-native's `wgpuInstanceWaitAny` (a native timed wait, exposed as
-  # `LibWGPU.instance_wait_any`) would avoid the polling, but in the
-  # vendored v29 binary that entry point is an `unimplemented!()` stub that
-  # aborts the process (verified: both poll-mode timeout=0 and timed waits
-  # panic, with or without the TimedWaitAny instance feature). Keep polling
-  # `wgpuInstanceProcessEvents` until wgpu-native actually implements it.
-  private def self.wait_until(instance : LibWGPU::Instance,
-                              keep_alive : Void* = Pointer(Void).null,
-                              timeout : Time::Span = 5.seconds,
-                              &block : -> Bool)
-    start_time = Time.monotonic
-    until block.call
-      LibWGPU.instance_process_events(instance)
-      break if block.call
-      if Time.monotonic - start_time > timeout
-        PENDING_TIMEOUT_MUTEX.synchronize do
-          PENDING_TIMEOUT_RESULTS << keep_alive unless keep_alive.null?
-        end
-        raise Error.new("timed out waiting for a wgpu callback")
-      end
-      sleep(1.millisecond)
-    end
-  end
+  # Boxed callback results retained after a timed-out wait — see
+  # `Internal::PENDING_TIMEOUT_RESULTS`. Same objects, kept here for
+  # backward compatibility.
+  PENDING_TIMEOUT_MUTEX   = Internal::PENDING_TIMEOUT_MUTEX
+  PENDING_TIMEOUT_RESULTS = Internal::PENDING_TIMEOUT_RESULTS
 
   # ==================================================================
   # Teardown helpers
@@ -426,7 +387,7 @@ module WGPU
 
     desc = LibWGPU::ShaderModuleDescriptor.new(
       next_in_chain: pointerof(source).as(Pointer(LibWGPU::ChainedStruct)),
-      label: label ? string_view(label) : empty_string_view,
+      label: Internal.label_view(label),
     )
 
     mod = LibWGPU.device_create_shader_module(device, pointerof(desc))
@@ -450,7 +411,7 @@ module WGPU
   def self.create_buffer(device : LibWGPU::Device, size : UInt64, usage : LibWGPU::BufferUsage,
                          label : String? = nil, mapped_at_creation : Bool = false) : LibWGPU::Buffer
     desc = LibWGPU::BufferDescriptor.new(
-      label: label ? string_view(label) : empty_string_view,
+      label: Internal.label_view(label),
       usage: usage,
       size: size,
       mapped_at_creation: (mapped_at_creation ? 1_u32 : 0_u32),
@@ -517,7 +478,7 @@ module WGPU
                                    label : String? = nil) : LibWGPU::ComputePipeline
     state = LibWGPU::ComputeState.new(module_: mod, entry_point: string_view(entry_point))
     desc = LibWGPU::ComputePipelineDescriptor.new(
-      label: label ? string_view(label) : empty_string_view,
+      label: Internal.label_view(label),
       layout: layout,
       compute: state,
     )
@@ -571,7 +532,7 @@ module WGPU
     end
 
     desc = LibWGPU::BindGroupDescriptor.new(
-      label: label ? string_view(label) : empty_string_view,
+      label: Internal.label_view(label),
       layout: layout,
       entry_count: LibC::SizeT.new(entries.size),
       entries: entries.to_unsafe,
