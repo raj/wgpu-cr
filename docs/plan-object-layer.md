@@ -53,6 +53,11 @@ On garde le préfixe `LibWGPU::` pour les enums/bitflags (`BufferUsage`, etc.)
 des signatures publiques — elles viennent directement du header et sont déjà
 documentées.
 
+> **Écart (phase 1)** : la classe de base s'appelle `WGPU::GPUObject(H)` et
+> non `WGPU::Object` : dans `module WGPU`, un `WGPU::Object` masquerait
+> `::Object` pour tout le code du module. Elle est générique sur le type du
+> handle (`Buffer < GPUObject(LibWGPU::Buffer)`), ce qui type `#to_unsafe`.
+
 ### 2.2 Classe, pas struct
 
 Classes allouées GC (identité mutable, héritage, `finalize` possible). Chaque
@@ -78,6 +83,18 @@ classe stocke son handle **typé** (`@handle : LibWGPU::Buffer`) et expose :
   `Device` garde `@adapter`, les objets créés gardent `@device`. Empêche le GC
   de finaliser le parent (donc de relâcher le handle C) avant les enfants.
   Pas besoin de `wgpuXxxAddRef` pour ça.
+- **Jamais de référence Crystal parent → enfant** (vérifié dans la stdlib :
+  Crystal enregistre les finaliseurs Boehm en mode *ordonné*
+  (`GC_register_finalizer_ignore_self`) ; un cycle entre objets finalisables
+  n'est **jamais** collecté). Seule exception : `Device` met en cache sa
+  `Queue` ; la `Queue` ne référence donc pas l'objet `Device`, mais garde son
+  propre `+1` sur le handle C du device (`wgpuDeviceAddRef`) et l'`Instance`
+  pour le pumping. `device.release` relâche aussi la queue ; le finaliseur
+  du device, lui, ne cascade pas (la queue peut encore être utilisée).
+- **Un finaliseur ne doit ni lever ni allouer** : allouer de la mémoire GC
+  depuis un finaliseur Boehm bloque le process (vérifié). D'où
+  `#finalize → release_once` (non virtuel) et des `release_handle` réduits
+  à l'appel FFI.
 - L'enchaînement `buffer → device → adapter → instance` est indispensable :
   le *pumping* d'événements (`instance_process_events` dans `wait_until`)
   est nécessaire pour les opérations asynchrones synchronisées (map, request).
@@ -168,7 +185,7 @@ examples/
 
 ## 4. Phases
 
-### Phase 0 — Refactor des internes (pré-requis, ~½ journée)
+### Phase 0 — Refactor des internes (pré-requis, ~½ journée) ✅
 
 - Créer `src/wgpu/internal.cr` : déplacer/copier `wait_until` (public dans
   `Internal` mais privé pour l'utilisateur), `string_view`, `null_string_view`,
@@ -176,7 +193,7 @@ examples/
 - `api.cr` conserve ses signatures actuelles en déléguant à `Internal`.
 - `crystal spec` vert : zéro changement de comportement.
 
-### Phase 1 — Le squelette : `Object`, `Instance`, `Adapter`, `Device`, `Queue`
+### Phase 1 — Le squelette : `GPUObject`, `Instance`, `Adapter`, `Device`, `Queue` ✅
 
 | Classe | Méthodes | FFI couvertes |
 |---|---|---|
@@ -194,6 +211,13 @@ examples/
 
 **Livrable** : `WGPU::Instance.new → … → device` en syntaxe objet, releases
 automatiques, tests verts.
+
+> **Réalisé** : comme prévu, sauf `#set_label` et `#has_wgsl_language_feature?`,
+> non exposés (stubs qui abortent, cf. §6) : le label se passe à la création.
+> En plus : `GPUObject#use { }` (forme bloc générique), garde « used after
+> release » (`WGPU::Error` au lieu d'un use-after-free), `Device#adapter_info`,
+> `Buffer#size/usage/destroy`, `Queue#read_buffer` (via `WGPU.read_buffer`).
+> Specs : `spec/objects_spec.cr` (8 exemples, dont finalisation GC réelle).
 
 ### Phase 2 — Les ressources créées par le device
 
@@ -241,10 +265,12 @@ headless via `WGPU_FRAMES`).
 
 ### Phase 4 — Consolidation
 
-1. **Délégation** : réécrire les helpers statiques `WGPU.create_buffer`,
-   `WGPU.dispatch`, `WGPU.read_buffer`… pour appeler la couche objet (une seule
-   implémentation de `wait_until` et du readback). Signatures publiques
-   inchangées → zéro breaking change, tests existants comme filet.
+1. **Délégation** : ~~réécrire les helpers statiques pour appeler la couche
+   objet~~. *Revu en phase 1* : c'est la couche objet qui appelle les helpers
+   statiques (`WGPU.request_adapter`, `WGPU.create_buffer`, `WGPU.read_buffer`…)
+   avec ses handles, ce qui donne déjà une seule implémentation sans inverser
+   les dépendances. Il ne reste qu'à vérifier, en fin de phase 3, qu'aucune
+   logique n'est dupliquée entre les deux couches.
 2. **Exemples** : `examples/compute_oo.cr` (nouveau) ; migrer
    `compute_wrapped.cr` vers l'objet et le renommer plus tard.
 3. **Docs** : README (section « Object layer », tableau avant/après),
@@ -286,6 +312,9 @@ Dans `spec/objects_spec.cr` (tous headless, même schéma que l'existant) :
 | Lifetime des `StringView` (pas de copie par `WGPU.string_view`) | même discipline qu'aujourd'hui : la String reste vivante pendant l'appel, wgpu copie à la création |
 | `get_*` parfois +1 (queue, bind group layout) parfois pas | vérifier au cas par cas (webgpu.h : ces deux-là sont possédés, déjà traités dans `api.cr`) ; en cas de doute, `AddRef` défensif |
 | Descripteur render pipeline énorme | struct d'options Crystal dédiée en phase 3 seulement |
+| Stubs `unimplemented!()` de wgpu-native v29 : abort du process, impossible à rattraper (vérifié : tous les `wgpu*SetLabel`, `wgpuDeviceGetAdapterInfo`, `wgpuInstanceGetWGSLLanguageFeatures`, `wgpuInstanceHasWGSLLanguageFeature`, en plus de `wgpuInstanceWaitAny` et `wgpuHasInstanceFeature`) | ne jamais les appeler depuis la couche objet : label fixé à la création seulement, `Device#adapter_info` lu via l'`Adapter`, pas de requêtes WGSL. Sonder chaque nouvelle FFI avant de l'exposer |
+| Cycle de références Crystal → objets jamais finalisés | pas de référence parent → enfant (cf. 2.3) |
+| Callback de log wgpu (`set_log_stderr`) qui alloue une `String` s'il est déclenché pendant un release depuis un finaliseur → blocage | non observé (aucun log émis pendant les release, même en `Trace`) ; si besoin, différer les release du finaliseur vers une file pré-allouée |
 | CI/GPU requis pour les specs | même approche que le spec actuel (compute headless), déjà en place dans le workflow |
 
 ---

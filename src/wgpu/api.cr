@@ -131,6 +131,8 @@ module WGPU
   end
 
   # True if `instance` supports the given WGSL language `feature`.
+  # NOTE: In wgpu-native v29, `wgpuInstanceHasWGSLLanguageFeature` is an unimplemented stub in Rust that panics
+  # (aborting the process).
   def self.instance_has_wgsl_language_feature?(instance : LibWGPU::Instance, feature : LibWGPU::WGSLLanguageFeatureName) : Bool
     LibWGPU.instance_has_wgsl_language_feature(instance, feature) != 0
   end

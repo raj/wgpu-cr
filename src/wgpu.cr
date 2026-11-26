@@ -2,13 +2,17 @@
 #
 #   require "wgpu"
 #
-# Two API levels:
+# Three API levels:
 #   * `LibWGPU`    — raw FFI binding generated from webgpu.h (1:1 with the C).
 #   * `WGPU`       — idiomatic helpers (StringView, synchronous requests…).
+#   * object layer — `WGPU::Instance`, `WGPU::Device`… owning their handles
+#     (`device.create_buffer(…)`, released automatically).
 #   (shared internals — wait loop, StringView — live in `WGPU::Internal`)
 require "./wgpu/native"
 require "./wgpu/internal"
 require "./wgpu/api"
+require "./wgpu/objects/gpu_object"
+require "./wgpu/objects/*"
 
 module WGPU
   VERSION = "0.1.0"
